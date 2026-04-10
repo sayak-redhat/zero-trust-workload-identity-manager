@@ -45,9 +45,18 @@ const (
 	SpiffeHelperContainerName = "spiffe-helper"
 	SpiffeHelperImage         = "ghcr.io/spiffe/spiffe-helper:0.11.0"
 
-	DefaultInterval = 10 * time.Second
-	ShortInterval   = 5 * time.Second
-	DefaultTimeout  = 5 * time.Minute
-	ShortTimeout    = 2 * time.Minute
+	DefaultInterval    = 10 * time.Second
+	ShortInterval      = 5 * time.Second
+	DefaultTimeout     = 5 * time.Minute
+	ShortTimeout       = 2 * time.Minute
 	TestContextTimeout = 10 * time.Minute
+
+	SVIDValidationNamespace      = "e2e-svid-validation"
+	NegativeAttestNamespace      = "e2e-negative-attest"
+	MultiIdentityNamespace       = "e2e-multi-identity"
+	SVIDRotationNamespace        = "e2e-svid-rotation"
+	ClusterSPIFFEIDLifecycleNS   = "e2e-cspiffeid-lifecycle"
+	SVIDAppearTimeout            = 3 * time.Minute
+	SVIDRotationShortValidity    = 2 * time.Minute
+	SVIDRotationPollTimeout      = 4 * time.Minute
 )

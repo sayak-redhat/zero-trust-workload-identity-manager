@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"strings"
 	"time"
@@ -1799,6 +1800,562 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 				return !strings.Contains(cm.Data[utils.SpireServerConfigKey], driftMarker)
 			}).WithPolling(utils.ShortInterval).WithTimeout(utils.ShortTimeout).Should(BeTrue(),
 				"ConfigMap drift should be corrected when CreateOnlyMode is False")
+		})
+	})
+
+	// ========================================================================
+	// SVID Certificate Validation (SPIRE-494: TC-001, TC-002, TC-003, TC-005, TC-010)
+	// ========================================================================
+	Context("SVID certificate validation", func() {
+		var (
+			svidCert   *x509.Certificate
+			bundleCert *x509.Certificate
+		)
+
+		BeforeAll(func() {
+			ctx := context.Background()
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   utils.SVIDValidationNamespace,
+					Labels: map[string]string{"kubernetes.io/metadata.name": utils.SVIDValidationNamespace},
+				},
+			}
+			By("Creating SVID validation namespace")
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, ns) })
+
+			cspiffeID := &spiffev1alpha1.ClusterSPIFFEID{
+				ObjectMeta: metav1.ObjectMeta{Name: "svid-validation-test"},
+				Spec: spiffev1alpha1.ClusterSPIFFEIDSpec{
+					SPIFFEIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}",
+					PodSelector:      &metav1.LabelSelector{MatchLabels: map[string]string{"app": "svid-validation"}},
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": utils.SVIDValidationNamespace},
+					},
+					ClassName: "zero-trust-workload-identity-manager-spire",
+				},
+			}
+			By("Creating ClusterSPIFFEID for SVID validation")
+			Expect(k8sClient.Create(ctx, cspiffeID)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, cspiffeID) })
+
+			sa := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "svid-validation-sa", Namespace: utils.SVIDValidationNamespace},
+			}
+			Expect(k8sClient.Create(ctx, sa)).To(Succeed())
+
+			helperConf := utils.DefaultAttestationSpiffeHelperConfig().String()
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: utils.SpiffeHelperConfigMapName, Namespace: utils.SVIDValidationNamespace},
+				Data:       map[string]string{"helper.conf": helperConf},
+			}
+			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+			pod := utils.NewAttestationPod("svid-validation-pod", utils.SVIDValidationNamespace, "svid-validation-sa",
+				map[string]string{"app": "svid-validation"})
+			By("Creating SVID validation pod")
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+			By("Waiting for SVID validation pod to become ready")
+			utils.WaitForPodReady(ctx, clientset, "svid-validation-pod", utils.SVIDValidationNamespace, utils.SVIDAppearTimeout)
+
+			By("Waiting for SVID files to appear")
+			Eventually(func() string {
+				stdout, _, _ := utils.ExecInPod(ctx, utils.SVIDValidationNamespace, "svid-validation-pod", "app", []string{"ls", "/certs/"})
+				return stdout
+			}).WithTimeout(utils.SVIDAppearTimeout).WithPolling(utils.DefaultInterval).Should(
+				And(ContainSubstring("svid.pem"), ContainSubstring("bundle.pem")))
+
+			By("Reading and parsing certificates")
+			svidPEM, err := utils.ReadFileFromPod(ctx, utils.SVIDValidationNamespace, "svid-validation-pod", "app", "/certs/svid.pem")
+			Expect(err).NotTo(HaveOccurred())
+			svidCerts, err := utils.ParsePEMCertificates([]byte(svidPEM))
+			Expect(err).NotTo(HaveOccurred())
+			svidCert = svidCerts[0]
+
+			bundlePEM, err := utils.ReadFileFromPod(ctx, utils.SVIDValidationNamespace, "svid-validation-pod", "app", "/certs/bundle.pem")
+			Expect(err).NotTo(HaveOccurred())
+			bundleCerts, err := utils.ParsePEMCertificates([]byte(bundlePEM))
+			Expect(err).NotTo(HaveOccurred())
+			bundleCert = bundleCerts[0]
+		})
+
+		It("svid.pem should be a valid X.509 certificate", Label("security-context"), func() {
+			By("Verifying certificate time validity")
+			now := time.Now()
+			Expect(svidCert.NotBefore.Before(now)).To(BeTrue(), "certificate NotBefore should be in the past")
+			Expect(svidCert.NotAfter.After(now)).To(BeTrue(), "certificate NotAfter should be in the future")
+			fmt.Fprintf(GinkgoWriter, "SVID cert: subject=%s, notBefore=%s, notAfter=%s\n",
+				svidCert.Subject, svidCert.NotBefore, svidCert.NotAfter)
+		})
+
+		It("SPIFFE ID should match the ClusterSPIFFEID template", Label("security-context", "reconciliation"), func() {
+			By("Extracting URI SANs from the certificate")
+			Expect(svidCert.URIs).NotTo(BeEmpty(), "certificate should have URI SANs")
+
+			By("Verifying SPIFFE ID format")
+			found := false
+			expectedSuffix := fmt.Sprintf("/ns/%s/sa/svid-validation-sa", utils.SVIDValidationNamespace)
+			for _, uri := range svidCert.URIs {
+				if uri.Scheme == "spiffe" && strings.HasSuffix(uri.String(), expectedSuffix) {
+					found = true
+					fmt.Fprintf(GinkgoWriter, "found matching SPIFFE ID: %s\n", uri.String())
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "certificate should contain SPIFFE ID matching template, got URIs: %v", svidCert.URIs)
+		})
+
+		It("SVID should have valid expiry time within configured TTL", Label("security-context"), func() {
+			By("Calculating certificate lifetime")
+			lifetime := svidCert.NotAfter.Sub(svidCert.NotBefore)
+			maxAllowed := 2 * time.Hour // generous upper bound for DefaultX509Validity of 1h + clock skew
+			Expect(lifetime).To(BeNumerically("<=", maxAllowed),
+				"SVID lifetime %s should not exceed %s", lifetime, maxAllowed)
+			fmt.Fprintf(GinkgoWriter, "SVID lifetime: %s\n", lifetime)
+		})
+
+		It("svid.pem should chain to bundle.pem", Label("security-context"), func() {
+			By("Verifying trust chain")
+			err := utils.VerifyCertificateChain(svidCert, []*x509.Certificate{bundleCert})
+			Expect(err).NotTo(HaveOccurred(), "SVID certificate should chain to the trust bundle")
+			fmt.Fprintf(GinkgoWriter, "trust chain verified: SVID(%s) -> Bundle(%s)\n",
+				svidCert.Subject, bundleCert.Subject)
+		})
+
+		It("bundle.pem should be a valid CA certificate", Label("security-context"), func() {
+			By("Verifying CA flag")
+			Expect(bundleCert.IsCA).To(BeTrue(), "bundle certificate should have IsCA=true")
+
+			By("Verifying KeyUsage includes CertSign")
+			Expect(bundleCert.KeyUsage & x509.KeyUsageCertSign).NotTo(BeZero(),
+				"bundle certificate KeyUsage should include CertSign")
+
+			By("Verifying bundle is not expired")
+			now := time.Now()
+			Expect(bundleCert.NotAfter.After(now)).To(BeTrue(), "bundle certificate should not be expired")
+			fmt.Fprintf(GinkgoWriter, "bundle cert: subject=%s, isCA=%v, notAfter=%s\n",
+				bundleCert.Subject, bundleCert.IsCA, bundleCert.NotAfter)
+		})
+	})
+
+	// ========================================================================
+	// Negative attestation (SPIRE-494: TC-006)
+	// ========================================================================
+	Context("Negative attestation", func() {
+		It("pod without matching ClusterSPIFFEID should NOT get an SVID", Label("negative-input-validation", "security-context"), func() {
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   utils.NegativeAttestNamespace,
+					Labels: map[string]string{"kubernetes.io/metadata.name": utils.NegativeAttestNamespace},
+				},
+			}
+			By("Creating negative attestation test namespace")
+			Expect(k8sClient.Create(testCtx, ns)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, ns) })
+
+			sa := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "no-spiffeid-sa", Namespace: utils.NegativeAttestNamespace},
+			}
+			Expect(k8sClient.Create(testCtx, sa)).To(Succeed())
+
+			helperConf := utils.DefaultAttestationSpiffeHelperConfig().String()
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: utils.SpiffeHelperConfigMapName, Namespace: utils.NegativeAttestNamespace},
+				Data:       map[string]string{"helper.conf": helperConf},
+			}
+			Expect(k8sClient.Create(testCtx, cm)).To(Succeed())
+
+			By("Creating pod with labels that do NOT match any ClusterSPIFFEID")
+			pod := utils.NewAttestationPod("negative-attest-pod", utils.NegativeAttestNamespace, "no-spiffeid-sa",
+				map[string]string{"app": "no-matching-spiffeid"})
+			Expect(k8sClient.Create(testCtx, pod)).To(Succeed())
+
+			By("Waiting for pod to be Running")
+			utils.WaitForPodRunning(testCtx, clientset, "negative-attest-pod", utils.NegativeAttestNamespace, utils.ShortTimeout)
+
+			By("Verifying SVID files do NOT appear")
+			Consistently(func() string {
+				stdout, _, _ := utils.ExecInPod(testCtx, utils.NegativeAttestNamespace, "negative-attest-pod", "app", []string{"ls", "/certs/"})
+				return stdout
+			}).WithTimeout(60*time.Second).WithPolling(utils.DefaultInterval).ShouldNot(
+				ContainSubstring("svid.pem"),
+				"pod without matching ClusterSPIFFEID should NOT receive an SVID")
+		})
+	})
+
+	// ========================================================================
+	// ClusterSPIFFEID lifecycle (SPIRE-494: TC-007, TC-008, TC-009)
+	// ========================================================================
+	Context("ClusterSPIFFEID lifecycle", func() {
+		It("should propagate ClusterSPIFFEID updates to workload SVID", Label("reconciliation"), func() {
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   utils.ClusterSPIFFEIDLifecycleNS,
+					Labels: map[string]string{"kubernetes.io/metadata.name": utils.ClusterSPIFFEIDLifecycleNS},
+				},
+			}
+			By("Creating lifecycle test namespace")
+			Expect(k8sClient.Create(testCtx, ns)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, ns) })
+
+			cspiffeID := &spiffev1alpha1.ClusterSPIFFEID{
+				ObjectMeta: metav1.ObjectMeta{Name: "lifecycle-update-test"},
+				Spec: spiffev1alpha1.ClusterSPIFFEIDSpec{
+					SPIFFEIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}",
+					PodSelector:      &metav1.LabelSelector{MatchLabels: map[string]string{"app": "lifecycle-test"}},
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": utils.ClusterSPIFFEIDLifecycleNS},
+					},
+					ClassName: "zero-trust-workload-identity-manager-spire",
+				},
+			}
+			Expect(k8sClient.Create(testCtx, cspiffeID)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, cspiffeID) })
+
+			sa := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "lifecycle-sa", Namespace: utils.ClusterSPIFFEIDLifecycleNS},
+			}
+			Expect(k8sClient.Create(testCtx, sa)).To(Succeed())
+
+			helperConf := utils.DefaultAttestationSpiffeHelperConfig().String()
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: utils.SpiffeHelperConfigMapName, Namespace: utils.ClusterSPIFFEIDLifecycleNS},
+				Data:       map[string]string{"helper.conf": helperConf},
+			}
+			Expect(k8sClient.Create(testCtx, cm)).To(Succeed())
+
+			pod := utils.NewAttestationPod("lifecycle-pod", utils.ClusterSPIFFEIDLifecycleNS, "lifecycle-sa",
+				map[string]string{"app": "lifecycle-test"})
+			Expect(k8sClient.Create(testCtx, pod)).To(Succeed())
+
+			By("Waiting for initial SVID")
+			utils.WaitForPodReady(testCtx, clientset, "lifecycle-pod", utils.ClusterSPIFFEIDLifecycleNS, utils.SVIDAppearTimeout)
+			var initialSerial string
+			Eventually(func() error {
+				svidPEM, err := utils.ReadFileFromPod(testCtx, utils.ClusterSPIFFEIDLifecycleNS, "lifecycle-pod", "app", "/certs/svid.pem")
+				if err != nil {
+					return err
+				}
+				certs, err := utils.ParsePEMCertificates([]byte(svidPEM))
+				if err != nil {
+					return err
+				}
+				initialSerial = certs[0].SerialNumber.String()
+				return nil
+			}).WithTimeout(utils.SVIDAppearTimeout).WithPolling(utils.DefaultInterval).Should(Succeed())
+			fmt.Fprintf(GinkgoWriter, "initial SVID serial: %s\n", initialSerial)
+
+			By("Updating ClusterSPIFFEID template")
+			updatedCSPIFFEID := &spiffev1alpha1.ClusterSPIFFEID{}
+			Expect(k8sClient.Get(testCtx, client.ObjectKey{Name: "lifecycle-update-test"}, updatedCSPIFFEID)).To(Succeed())
+			updatedCSPIFFEID.Spec.SPIFFEIDTemplate = "spiffe://{{ .TrustDomain }}/updated/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+			Expect(k8sClient.Update(testCtx, updatedCSPIFFEID)).To(Succeed())
+
+			By("Waiting for SVID to be re-issued with new serial")
+			Eventually(func() bool {
+				svidPEM, err := utils.ReadFileFromPod(testCtx, utils.ClusterSPIFFEIDLifecycleNS, "lifecycle-pod", "app", "/certs/svid.pem")
+				if err != nil {
+					return false
+				}
+				certs, err := utils.ParsePEMCertificates([]byte(svidPEM))
+				if err != nil {
+					return false
+				}
+				newSerial := certs[0].SerialNumber.String()
+				if newSerial != initialSerial {
+					fmt.Fprintf(GinkgoWriter, "SVID re-issued: serial changed from %s to %s\n", initialSerial, newSerial)
+					return true
+				}
+				return false
+			}).WithTimeout(utils.SVIDAppearTimeout).WithPolling(utils.DefaultInterval).Should(BeTrue(),
+				"SVID should be re-issued after ClusterSPIFFEID update")
+		})
+
+		It("should re-attest pod after deletion and re-creation", Label("reconciliation"), func() {
+			reattestedNS := "e2e-reattest-test"
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   reattestedNS,
+					Labels: map[string]string{"kubernetes.io/metadata.name": reattestedNS},
+				},
+			}
+			Expect(k8sClient.Create(testCtx, ns)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, ns) })
+
+			cspiffeID := &spiffev1alpha1.ClusterSPIFFEID{
+				ObjectMeta: metav1.ObjectMeta{Name: "reattest-test"},
+				Spec: spiffev1alpha1.ClusterSPIFFEIDSpec{
+					SPIFFEIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}",
+					PodSelector:      &metav1.LabelSelector{MatchLabels: map[string]string{"app": "reattest-test"}},
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": reattestedNS},
+					},
+					ClassName: "zero-trust-workload-identity-manager-spire",
+				},
+			}
+			Expect(k8sClient.Create(testCtx, cspiffeID)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, cspiffeID) })
+
+			sa := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "reattest-sa", Namespace: reattestedNS},
+			}
+			Expect(k8sClient.Create(testCtx, sa)).To(Succeed())
+
+			helperConf := utils.DefaultAttestationSpiffeHelperConfig().String()
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: utils.SpiffeHelperConfigMapName, Namespace: reattestedNS},
+				Data:       map[string]string{"helper.conf": helperConf},
+			}
+			Expect(k8sClient.Create(testCtx, cm)).To(Succeed())
+
+			podSpec := utils.NewAttestationPod("reattest-pod", reattestedNS, "reattest-sa",
+				map[string]string{"app": "reattest-test"})
+
+			By("Creating initial pod and waiting for SVID")
+			Expect(k8sClient.Create(testCtx, podSpec)).To(Succeed())
+			utils.WaitForPodReady(testCtx, clientset, "reattest-pod", reattestedNS, utils.SVIDAppearTimeout)
+
+			var initialSerial string
+			Eventually(func() error {
+				pem, err := utils.ReadFileFromPod(testCtx, reattestedNS, "reattest-pod", "app", "/certs/svid.pem")
+				if err != nil {
+					return err
+				}
+				certs, err := utils.ParsePEMCertificates([]byte(pem))
+				if err != nil {
+					return err
+				}
+				initialSerial = certs[0].SerialNumber.String()
+				return nil
+			}).WithTimeout(utils.SVIDAppearTimeout).WithPolling(utils.DefaultInterval).Should(Succeed())
+			fmt.Fprintf(GinkgoWriter, "initial SVID serial: %s\n", initialSerial)
+
+			By("Deleting attestation pod")
+			Expect(clientset.CoreV1().Pods(reattestedNS).Delete(testCtx, "reattest-pod", metav1.DeleteOptions{})).To(Succeed())
+
+			By("Waiting for pod to be fully deleted")
+			Eventually(func() bool {
+				_, err := clientset.CoreV1().Pods(reattestedNS).Get(testCtx, "reattest-pod", metav1.GetOptions{})
+				return err != nil
+			}).WithTimeout(utils.ShortTimeout).WithPolling(utils.ShortInterval).Should(BeTrue())
+
+			By("Re-creating attestation pod")
+			newPod := utils.NewAttestationPod("reattest-pod", reattestedNS, "reattest-sa",
+				map[string]string{"app": "reattest-test"})
+			Expect(k8sClient.Create(testCtx, newPod)).To(Succeed())
+
+			By("Waiting for re-created pod to get a fresh SVID")
+			utils.WaitForPodReady(testCtx, clientset, "reattest-pod", reattestedNS, utils.SVIDAppearTimeout)
+			Eventually(func() bool {
+				pem, err := utils.ReadFileFromPod(testCtx, reattestedNS, "reattest-pod", "app", "/certs/svid.pem")
+				if err != nil {
+					return false
+				}
+				certs, err := utils.ParsePEMCertificates([]byte(pem))
+				if err != nil {
+					return false
+				}
+				newSerial := certs[0].SerialNumber.String()
+				if newSerial != initialSerial {
+					fmt.Fprintf(GinkgoWriter, "re-attested: serial changed from %s to %s\n", initialSerial, newSerial)
+					return true
+				}
+				return false
+			}).WithTimeout(utils.SVIDAppearTimeout).WithPolling(utils.DefaultInterval).Should(BeTrue(),
+				"re-created pod should get a fresh SVID with different serial")
+		})
+
+		It("should issue distinct SPIFFE IDs to workloads with different ServiceAccounts", Label("security-context", "reconciliation"), func() {
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   utils.MultiIdentityNamespace,
+					Labels: map[string]string{"kubernetes.io/metadata.name": utils.MultiIdentityNamespace},
+				},
+			}
+			Expect(k8sClient.Create(testCtx, ns)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, ns) })
+
+			cspiffeID := &spiffev1alpha1.ClusterSPIFFEID{
+				ObjectMeta: metav1.ObjectMeta{Name: "multi-identity-test"},
+				Spec: spiffev1alpha1.ClusterSPIFFEIDSpec{
+					SPIFFEIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}",
+					PodSelector:      &metav1.LabelSelector{MatchLabels: map[string]string{"app": "multi-id-test"}},
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": utils.MultiIdentityNamespace},
+					},
+					ClassName: "zero-trust-workload-identity-manager-spire",
+				},
+			}
+			Expect(k8sClient.Create(testCtx, cspiffeID)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, cspiffeID) })
+
+			for _, saName := range []string{"sa-alpha", "sa-beta"} {
+				sa := &corev1.ServiceAccount{
+					ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: utils.MultiIdentityNamespace},
+				}
+				Expect(k8sClient.Create(testCtx, sa)).To(Succeed())
+			}
+
+			helperConf := utils.DefaultAttestationSpiffeHelperConfig().String()
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: utils.SpiffeHelperConfigMapName, Namespace: utils.MultiIdentityNamespace},
+				Data:       map[string]string{"helper.conf": helperConf},
+			}
+			Expect(k8sClient.Create(testCtx, cm)).To(Succeed())
+
+			By("Creating two pods with different ServiceAccounts")
+			podAlpha := utils.NewAttestationPod("pod-alpha", utils.MultiIdentityNamespace, "sa-alpha",
+				map[string]string{"app": "multi-id-test"})
+			podBeta := utils.NewAttestationPod("pod-beta", utils.MultiIdentityNamespace, "sa-beta",
+				map[string]string{"app": "multi-id-test"})
+			Expect(k8sClient.Create(testCtx, podAlpha)).To(Succeed())
+			Expect(k8sClient.Create(testCtx, podBeta)).To(Succeed())
+
+			By("Waiting for both pods to be ready")
+			utils.WaitForPodReady(testCtx, clientset, "pod-alpha", utils.MultiIdentityNamespace, utils.SVIDAppearTimeout)
+			utils.WaitForPodReady(testCtx, clientset, "pod-beta", utils.MultiIdentityNamespace, utils.SVIDAppearTimeout)
+
+			By("Reading SVIDs from both pods")
+			extractSPIFFEID := func(podName string) string {
+				var spiffeID string
+				Eventually(func() error {
+					pemData, err := utils.ReadFileFromPod(testCtx, utils.MultiIdentityNamespace, podName, "app", "/certs/svid.pem")
+					if err != nil {
+						return err
+					}
+					certs, err := utils.ParsePEMCertificates([]byte(pemData))
+					if err != nil {
+						return err
+					}
+					if len(certs[0].URIs) == 0 {
+						return fmt.Errorf("no URI SANs in certificate")
+					}
+					spiffeID = certs[0].URIs[0].String()
+					return nil
+				}).WithTimeout(utils.SVIDAppearTimeout).WithPolling(utils.DefaultInterval).Should(Succeed())
+				return spiffeID
+			}
+
+			alphaID := extractSPIFFEID("pod-alpha")
+			betaID := extractSPIFFEID("pod-beta")
+
+			By("Verifying distinct SPIFFE IDs")
+			fmt.Fprintf(GinkgoWriter, "pod-alpha SPIFFE ID: %s\n", alphaID)
+			fmt.Fprintf(GinkgoWriter, "pod-beta  SPIFFE ID: %s\n", betaID)
+			Expect(alphaID).NotTo(Equal(betaID), "pods with different ServiceAccounts should have distinct SPIFFE IDs")
+			Expect(alphaID).To(ContainSubstring("/sa/sa-alpha"))
+			Expect(betaID).To(ContainSubstring("/sa/sa-beta"))
+		})
+	})
+
+	// ========================================================================
+	// SVID rotation (SPIRE-494: TC-004)
+	// ========================================================================
+	Context("SVID rotation", func() {
+		It("should rotate SVID before expiry when using short TTL", Label("security-context", "reconciliation"), func() {
+			By("Getting SpireServer object to modify X509 validity")
+			spireServer := &operatorv1alpha1.SpireServer{}
+			Expect(k8sClient.Get(testCtx, client.ObjectKey{Name: "cluster"}, spireServer)).To(Succeed())
+			originalValidity := spireServer.Spec.DefaultX509Validity
+
+			statefulset, err := clientset.AppsV1().StatefulSets(utils.OperatorNamespace).Get(testCtx, utils.SpireServerStatefulSetName, metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			initialGen := statefulset.Generation
+
+			By("Configuring SpireServer with short X509 validity for rotation testing")
+			err = utils.UpdateCRWithRetry(testCtx, k8sClient, spireServer, func() {
+				spireServer.Spec.DefaultX509Validity = metav1.Duration{Duration: utils.SVIDRotationShortValidity}
+			})
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func(ctx context.Context) {
+				By("Restoring SpireServer X509 validity")
+				server := &operatorv1alpha1.SpireServer{}
+				if err := k8sClient.Get(ctx, client.ObjectKey{Name: "cluster"}, server); err == nil {
+					server.Spec.DefaultX509Validity = originalValidity
+					k8sClient.Update(ctx, server)
+				}
+			})
+
+			By("Waiting for SpireServer rolling update")
+			utils.WaitForStatefulSetRollingUpdate(testCtx, clientset, utils.SpireServerStatefulSetName, utils.OperatorNamespace, initialGen, utils.ShortTimeout)
+			utils.WaitForStatefulSetReady(testCtx, clientset, utils.SpireServerStatefulSetName, utils.OperatorNamespace, utils.DefaultTimeout)
+
+			rotationNS := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   utils.SVIDRotationNamespace,
+					Labels: map[string]string{"kubernetes.io/metadata.name": utils.SVIDRotationNamespace},
+				},
+			}
+			Expect(k8sClient.Create(testCtx, rotationNS)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, rotationNS) })
+
+			cspiffeID := &spiffev1alpha1.ClusterSPIFFEID{
+				ObjectMeta: metav1.ObjectMeta{Name: "rotation-test"},
+				Spec: spiffev1alpha1.ClusterSPIFFEIDSpec{
+					SPIFFEIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}",
+					PodSelector:      &metav1.LabelSelector{MatchLabels: map[string]string{"app": "rotation-test"}},
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": utils.SVIDRotationNamespace},
+					},
+					ClassName: "zero-trust-workload-identity-manager-spire",
+				},
+			}
+			Expect(k8sClient.Create(testCtx, cspiffeID)).To(Succeed())
+			DeferCleanup(func(ctx context.Context) { _ = k8sClient.Delete(ctx, cspiffeID) })
+
+			sa := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "rotation-sa", Namespace: utils.SVIDRotationNamespace},
+			}
+			Expect(k8sClient.Create(testCtx, sa)).To(Succeed())
+
+			helperConf := utils.DefaultAttestationSpiffeHelperConfig().String()
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: utils.SpiffeHelperConfigMapName, Namespace: utils.SVIDRotationNamespace},
+				Data:       map[string]string{"helper.conf": helperConf},
+			}
+			Expect(k8sClient.Create(testCtx, cm)).To(Succeed())
+
+			pod := utils.NewAttestationPod("rotation-pod", utils.SVIDRotationNamespace, "rotation-sa",
+				map[string]string{"app": "rotation-test"})
+			Expect(k8sClient.Create(testCtx, pod)).To(Succeed())
+
+			By("Waiting for initial SVID")
+			utils.WaitForPodReady(testCtx, clientset, "rotation-pod", utils.SVIDRotationNamespace, utils.SVIDAppearTimeout)
+			var initialSerial string
+			Eventually(func() error {
+				pemData, err := utils.ReadFileFromPod(testCtx, utils.SVIDRotationNamespace, "rotation-pod", "app", "/certs/svid.pem")
+				if err != nil {
+					return err
+				}
+				certs, err := utils.ParsePEMCertificates([]byte(pemData))
+				if err != nil {
+					return err
+				}
+				initialSerial = certs[0].SerialNumber.String()
+				return nil
+			}).WithTimeout(utils.SVIDAppearTimeout).WithPolling(utils.DefaultInterval).Should(Succeed())
+			fmt.Fprintf(GinkgoWriter, "initial rotation SVID serial: %s\n", initialSerial)
+
+			By("Waiting for SVID rotation (serial number change)")
+			Eventually(func() bool {
+				pemData, err := utils.ReadFileFromPod(testCtx, utils.SVIDRotationNamespace, "rotation-pod", "app", "/certs/svid.pem")
+				if err != nil {
+					return false
+				}
+				certs, err := utils.ParsePEMCertificates([]byte(pemData))
+				if err != nil {
+					return false
+				}
+				newSerial := certs[0].SerialNumber.String()
+				if newSerial != initialSerial {
+					fmt.Fprintf(GinkgoWriter, "SVID rotated: serial %s -> %s\n", initialSerial, newSerial)
+					return true
+				}
+				fmt.Fprintf(GinkgoWriter, "waiting for rotation, serial still: %s\n", newSerial)
+				return false
+			}).WithTimeout(utils.SVIDRotationPollTimeout).WithPolling(utils.ShortInterval).Should(BeTrue(),
+				"SVID should be rotated within %s", utils.SVIDRotationPollTimeout)
 		})
 	})
 })

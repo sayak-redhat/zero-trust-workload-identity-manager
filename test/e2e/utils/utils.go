@@ -19,7 +19,9 @@ package utils
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -861,3 +863,123 @@ func WaitForUpgradeableStatus(ctx context.Context, k8sClient client.Client, name
 	}).WithTimeout(timeout).WithPolling(ShortInterval).Should(BeTrue(),
 		"Upgradeable condition should have status '%v' within %v", expectedStatus, timeout)
 }
+
+// ReadFileFromPod reads a file from a pod container via exec.
+func ReadFileFromPod(ctx context.Context, namespace, podName, containerName, filePath string) (string, error) {
+	stdout, _, err := ExecInPod(ctx, namespace, podName, containerName, []string{"cat", filePath})
+	if err != nil {
+		return "", fmt.Errorf("failed to read %s from pod %s/%s container %s: %w", filePath, namespace, podName, containerName, err)
+	}
+	return stdout, nil
+}
+
+// ParsePEMCertificates parses all PEM-encoded certificates from raw PEM data.
+func ParsePEMCertificates(pemData []byte) ([]*x509.Certificate, error) {
+	var certs []*x509.Certificate
+	rest := pemData
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse certificate: %w", err)
+		}
+		certs = append(certs, cert)
+	}
+	if len(certs) == 0 {
+		return nil, fmt.Errorf("no certificates found in PEM data")
+	}
+	return certs, nil
+}
+
+// VerifyCertificateChain verifies that cert chains to the given CA certificates.
+func VerifyCertificateChain(cert *x509.Certificate, caCerts []*x509.Certificate) error {
+	roots := x509.NewCertPool()
+	for _, ca := range caCerts {
+		roots.AddCert(ca)
+	}
+	_, err := cert.Verify(x509.VerifyOptions{
+		Roots:     roots,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	})
+	return err
+}
+
+// NewAttestationPod creates a Pod configured for SPIRE attestation testing.
+// The pod includes a spiffe-helper sidecar and a busybox app container,
+// both with restricted-v2 compliant security contexts.
+func NewAttestationPod(name, namespace, saName string, labels map[string]string) *corev1.Pod {
+	readOnlyTrue := true
+
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.PodSpec{
+			ServiceAccountName: saName,
+			Containers: []corev1.Container{
+				{
+					Name:  SpiffeHelperContainerName,
+					Image: SpiffeHelperImage,
+					Args:  []string{"-config", "/run/spiffe-helper/helper.conf"},
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "spiffe-workload-api", MountPath: "/spiffe-workload-api", ReadOnly: true},
+						{Name: "certs", MountPath: "/certs"},
+						{Name: "spiffe-helper-config", MountPath: "/run/spiffe-helper", ReadOnly: true},
+					},
+					SecurityContext: attestationSecurityContext(),
+				},
+				{
+					Name:    "app",
+					Image:   "busybox",
+					Command: []string{"sleep", "3600"},
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "certs", MountPath: "/certs"},
+					},
+					SecurityContext: attestationSecurityContext(),
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "spiffe-workload-api",
+					VolumeSource: corev1.VolumeSource{
+						CSI: &corev1.CSIVolumeSource{
+							Driver:   "csi.spiffe.io",
+							ReadOnly: &readOnlyTrue,
+						},
+					},
+				},
+				{Name: "certs", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				{
+					Name: "spiffe-helper-config",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: SpiffeHelperConfigMapName},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func attestationSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptrBool(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		RunAsNonRoot:             ptrBool(true),
+		RunAsUser:                ptrInt64(1000),
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+func ptrBool(b bool) *bool    { return &b }
+func ptrInt64(i int64) *int64 { return &i }
