@@ -19,7 +19,9 @@ package utils
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -860,4 +862,69 @@ func WaitForUpgradeableStatus(ctx context.Context, k8sClient client.Client, name
 		return true
 	}).WithTimeout(timeout).WithPolling(ShortInterval).Should(BeTrue(),
 		"Upgradeable condition should have status '%v' within %v", expectedStatus, timeout)
+}
+
+// ReadFileFromPod reads a file from a pod container via exec.
+func ReadFileFromPod(ctx context.Context, namespace, podName, containerName, filePath string) (string, error) {
+	stdout, _, err := ExecInPod(ctx, namespace, podName, containerName, []string{"cat", filePath})
+	if err != nil {
+		return "", fmt.Errorf("failed to read %s from %s/%s: %w", filePath, namespace, podName, err)
+	}
+	return stdout, nil
+}
+
+// ParseCertificatePEM parses PEM-encoded data and returns the first X.509 certificate.
+func ParseCertificatePEM(pemData []byte) (*x509.Certificate, error) {
+	block, _ := pem.Decode(pemData)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+	return x509.ParseCertificate(block.Raw)
+}
+
+// ParseCertPoolPEM parses PEM-encoded data and returns a cert pool plus individual certs.
+func ParseCertPoolPEM(pemData []byte) (*x509.CertPool, []*x509.Certificate, error) {
+	pool := x509.NewCertPool()
+	var certs []*x509.Certificate
+	rest := pemData
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		cert, err := x509.ParseCertificate(block.Raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse certificate in bundle: %w", err)
+		}
+		pool.AddCert(cert)
+		certs = append(certs, cert)
+	}
+	if len(certs) == 0 {
+		return nil, nil, fmt.Errorf("no certificates found in PEM data")
+	}
+	return pool, certs, nil
+}
+
+// GetSPIFFEIDFromCert extracts the spiffe:// URI SAN from an X.509 certificate.
+func GetSPIFFEIDFromCert(cert *x509.Certificate) (string, error) {
+	for _, uri := range cert.URIs {
+		if uri.Scheme == "spiffe" {
+			return uri.String(), nil
+		}
+	}
+	return "", fmt.Errorf("no spiffe:// URI SAN found in certificate")
+}
+
+// VerifyCertChain verifies that cert chains to the CA roots in caBundlePEM.
+func VerifyCertChain(cert *x509.Certificate, caBundlePEM []byte) error {
+	roots, _, err := ParseCertPoolPEM(caBundlePEM)
+	if err != nil {
+		return fmt.Errorf("failed to parse CA bundle: %w", err)
+	}
+	_, err = cert.Verify(x509.VerifyOptions{
+		Roots:     roots,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	})
+	return err
 }
