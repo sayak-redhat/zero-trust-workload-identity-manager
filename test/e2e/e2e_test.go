@@ -32,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -398,161 +397,88 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 	})
 
 	Context("SpireAgent attestation", func() {
-		It("Workload attestation should succeed and workload receives SVID", func() {
-			attestationTestNamespace := "e2e-attestation-test"
-			attestationTestPodName := "attestation-test-pod"
-			attestationTestSA := "attestation-test-sa"
-			attestationTestAppContainer := "app"
+		It("svid.pem should be a valid X.509 certificate", Label("reconciliation"), func() {
+			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "svid-x509", nil)
 
-			attestationNS := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: attestationTestNamespace,
-					Labels: map[string]string{
-						"kubernetes.io/metadata.name": attestationTestNamespace,
-					},
-				},
-			}
-			clusterSPIFFEID := &spiffev1alpha1.ClusterSPIFFEID{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "attestation-test",
-				},
-				Spec: spiffev1alpha1.ClusterSPIFFEIDSpec{
-					SPIFFEIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}",
-					PodSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "attestation-test"},
-					},
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": attestationTestNamespace,
-						},
-					},
-					ClassName: "zero-trust-workload-identity-manager-spire",
-				},
-			}
+			By("Reading and parsing svid.pem")
+			_, block, rest, cert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+			Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
 
-			By("Creating attestation test namespace")
-			err := k8sClient.Create(testCtx, attestationNS)
-			Expect(err).NotTo(HaveOccurred(), "failed to create attestation test namespace")
+			By("Validating PEM encoding")
+			Expect(block).NotTo(BeNil(), "svid.pem must contain a valid PEM block")
+			Expect(block.Type).To(Equal("CERTIFICATE"), "PEM block type must be CERTIFICATE")
+			Expect(rest).To(Satisfy(func(b []byte) bool {
+				trimmed := strings.TrimSpace(string(b))
+				if len(trimmed) == 0 {
+					return true
+				}
+				_, _, _, parseErr := utils.ParsePEMCertificate(trimmed)
+				return parseErr == nil
+			}), "remaining data after first PEM block must be empty or another valid PEM block")
 
-			By("Creating ClusterSPIFFEID for attestation test")
-			err = k8sClient.Create(testCtx, clusterSPIFFEID)
-			Expect(err).NotTo(HaveOccurred(), "failed to create ClusterSPIFFEID")
+			By("Parsing X.509 certificate")
+			Expect(cert.NotBefore.Before(time.Now())).To(BeTrue(),
+				"certificate NotBefore (%s) must be in the past", cert.NotBefore)
+			Expect(cert.NotAfter.After(time.Now())).To(BeTrue(),
+				"certificate NotAfter (%s) must be in the future", cert.NotAfter)
+		})
 
-			DeferCleanup(func(ctx context.Context) {
-				By("Deleting ClusterSPIFFEID")
-				_ = k8sClient.Delete(ctx, clusterSPIFFEID)
-				By("Deleting attestation test namespace")
-				_ = k8sClient.Delete(ctx, attestationNS)
+		It("SVID SPIFFE ID should match the expected value from ClusterSPIFFEID template", Label("reconciliation"), func() {
+			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "spiffeid-match", nil)
+
+			By("Reading and parsing svid.pem")
+			_, _, _, cert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+			Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
+
+			By("Verifying SPIFFE ID in URI SAN")
+			expectedSPIFFEID := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", appDomain, f.Namespace, f.SAName)
+			Expect(cert.URIs).NotTo(BeEmpty(), "certificate must contain at least one URI SAN")
+			Expect(cert.URIs[0].String()).To(Equal(expectedSPIFFEID),
+				"SVID SPIFFE ID must match expected value")
+		})
+
+		It("SVID expiry time should be within valid TTL bounds", Label("reconciliation"), func() {
+			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "svid-expiry", nil)
+
+			By("Reading and parsing svid.pem")
+			_, _, _, cert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+			Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
+
+			By("Verifying TTL is within valid bounds")
+			ttl := cert.NotAfter.Sub(cert.NotBefore)
+			fmt.Fprintf(GinkgoWriter, "SVID TTL: %s (NotBefore=%s, NotAfter=%s)\n", ttl, cert.NotBefore, cert.NotAfter)
+			Expect(ttl).To(BeNumerically(">", 0), "TTL must be positive")
+			Expect(ttl).To(BeNumerically("<=", 24*time.Hour), "TTL must not exceed 24 hours")
+			Expect(cert.NotAfter.After(time.Now())).To(BeTrue(), "certificate must not be expired")
+		})
+
+		It("SVID should be rotated before expiry", Label("reconciliation"), func() {
+			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "svid-rotation", func(spec *spiffev1alpha1.ClusterSPIFFEIDSpec) {
+				spec.TTL = metav1.Duration{Duration: 60 * time.Second}
 			})
 
-			By("Creating ServiceAccount")
-			sa := &corev1.ServiceAccount{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      attestationTestSA,
-					Namespace: attestationTestNamespace,
-				},
-			}
-			err = k8sClient.Create(testCtx, sa)
-			Expect(err).NotTo(HaveOccurred(), "failed to create ServiceAccount")
+			By("Recording initial certificate serial number")
+			_, _, _, initialCert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+			Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
+			initialSerial := initialCert.SerialNumber.String()
+			fmt.Fprintf(GinkgoWriter, "initial SVID serial: %s\n", initialSerial)
 
-			By("Creating spiffe-helper ConfigMap")
-			helperConf := utils.DefaultAttestationSpiffeHelperConfig().String()
-			cm := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      utils.SpiffeHelperConfigMapName,
-					Namespace: attestationTestNamespace,
-				},
-				Data: map[string]string{
-					"helper.conf": helperConf,
-				},
-			}
-			err = k8sClient.Create(testCtx, cm)
-			Expect(err).NotTo(HaveOccurred(), "failed to create spiffe-helper ConfigMap")
-
-			By("Creating attestation test pod with CSI volume and spiffe-helper")
-			readOnlyTrue := true
-			pod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      attestationTestPodName,
-					Namespace: attestationTestNamespace,
-					Labels:    map[string]string{"app": "attestation-test"},
-				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: attestationTestSA,
-					Containers: []corev1.Container{
-						{
-							Name:  utils.SpiffeHelperContainerName,
-							Image: utils.SpiffeHelperImage,
-							Args:  []string{"-config", "/run/spiffe-helper/helper.conf"},
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: "spiffe-workload-api", MountPath: "/spiffe-workload-api", ReadOnly: true},
-								{Name: "certs", MountPath: "/certs"},
-								{Name: "spiffe-helper-config", MountPath: "/run/spiffe-helper", ReadOnly: true},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: ptr.To(false),
-								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-								RunAsNonRoot:             ptr.To(true),
-								RunAsUser:                ptr.To(int64(1000)),
-								SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-							},
-						},
-						{
-							Name:    attestationTestAppContainer,
-							Image:   "busybox",
-							Command: []string{"sleep", "3600"},
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: "certs", MountPath: "/certs"},
-							},
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: ptr.To(false),
-								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-								RunAsNonRoot:             ptr.To(true),
-								RunAsUser:                ptr.To(int64(1000)),
-								SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-							},
-						},
-					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "spiffe-workload-api",
-							VolumeSource: corev1.VolumeSource{
-								CSI: &corev1.CSIVolumeSource{
-									Driver:   "csi.spiffe.io",
-									ReadOnly: &readOnlyTrue,
-								},
-							},
-						},
-						{Name: "certs", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-						{
-							Name: "spiffe-helper-config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: utils.SpiffeHelperConfigMapName}},
-							},
-						},
-					},
-				},
-			}
-			err = k8sClient.Create(testCtx, pod)
-			Expect(err).NotTo(HaveOccurred(), "failed to create attestation test pod")
-
-			By("Waiting for attestation test pod to become ready")
-			utils.WaitForPodReady(testCtx, clientset, attestationTestPodName, attestationTestNamespace, 3*utils.ShortTimeout)
-
-			By("Verifying SVID files exist in /certs/")
+			By("Waiting for SVID rotation (serial number change)")
 			Eventually(func() string {
-				stdout, _, err := utils.ExecInPod(testCtx, attestationTestNamespace, attestationTestPodName, attestationTestAppContainer, []string{"ls", "/certs/"})
-				if err != nil {
-					fmt.Fprintf(GinkgoWriter, "exec ls /certs/ failed: %v\n", err)
-					return ""
+				_, _, _, c, parseErr := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+				if parseErr != nil {
+					return initialSerial
 				}
-				return stdout
-			}).WithTimeout(utils.DefaultTimeout).WithPolling(utils.DefaultInterval).Should(
-				And(
-					ContainSubstring("svid.pem"),
-					ContainSubstring("svid_key.pem"),
-					ContainSubstring("bundle.pem"),
-				))
+				return c.SerialNumber.String()
+			}).WithTimeout(3 * time.Minute).WithPolling(10 * time.Second).ShouldNot(Equal(initialSerial),
+				"SVID serial number must change after rotation")
+
+			By("Verifying rotated certificate is still valid")
+			_, _, _, rotatedCert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+			Expect(err).NotTo(HaveOccurred(), "failed to read and parse rotated svid.pem from pod")
+			Expect(rotatedCert.NotBefore.Before(time.Now())).To(BeTrue(), "rotated cert NotBefore must be in the past")
+			Expect(rotatedCert.NotAfter.After(time.Now())).To(BeTrue(), "rotated cert NotAfter must be in the future")
+			fmt.Fprintf(GinkgoWriter, "rotated SVID serial: %s\n", rotatedCert.SerialNumber.String())
 		})
 	})
 
