@@ -20,8 +20,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
-	"encoding/pem"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -50,36 +50,6 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-// SpiffeHelperConfig holds configuration for the spiffe-helper sidecar (helper.conf format).
-type SpiffeHelperConfig struct {
-	AgentAddress       string
-	CertDir            string
-	SvidFileName       string
-	SvidKeyFileName    string
-	SvidBundleFileName string
-}
-
-// DefaultAttestationSpiffeHelperConfig returns the default config for E2E attestation tests.
-func DefaultAttestationSpiffeHelperConfig() SpiffeHelperConfig {
-	return SpiffeHelperConfig{
-		AgentAddress:       "/spiffe-workload-api/spire-agent.sock",
-		CertDir:            "/certs",
-		SvidFileName:       "svid.pem",
-		SvidKeyFileName:    "svid_key.pem",
-		SvidBundleFileName: "bundle.pem",
-	}
-}
-
-// String returns the config as a TOML-like string for helper.conf.
-func (c SpiffeHelperConfig) String() string {
-	return fmt.Sprintf(`agent_address = %q
-cert_dir = %q
-svid_file_name = %q
-svid_key_file_name = %q
-svid_bundle_file_name = %q
-`, c.AgentAddress, c.CertDir, c.SvidFileName, c.SvidKeyFileName, c.SvidBundleFileName)
-}
 
 // GetTestDir returns the directory to write test results to
 func GetTestDir() string {
@@ -909,6 +879,36 @@ func WaitForUpgradeableStatus(ctx context.Context, k8sClient client.Client, name
 		return true
 	}).WithTimeout(timeout).WithPolling(ShortInterval).Should(BeTrue(),
 		"Upgradeable condition should have status '%v' within %v", expectedStatus, timeout)
+}
+
+// SpiffeHelperConfig holds configuration for the spiffe-helper sidecar (helper.conf format).
+type SpiffeHelperConfig struct {
+	AgentAddress       string
+	CertDir            string
+	SvidFileName       string
+	SvidKeyFileName    string
+	SvidBundleFileName string
+}
+
+// DefaultAttestationSpiffeHelperConfig returns the default config for E2E attestation tests.
+func DefaultAttestationSpiffeHelperConfig() SpiffeHelperConfig {
+	return SpiffeHelperConfig{
+		AgentAddress:       "/spiffe-workload-api/spire-agent.sock",
+		CertDir:            "/certs",
+		SvidFileName:       "svid.pem",
+		SvidKeyFileName:    "svid_key.pem",
+		SvidBundleFileName: "bundle.pem",
+	}
+}
+
+// String returns the config as a TOML-like string for helper.conf.
+func (c SpiffeHelperConfig) String() string {
+	return fmt.Sprintf(`agent_address = %q
+cert_dir = %q
+svid_file_name = %q
+svid_key_file_name = %q
+svid_bundle_file_name = %q
+`, c.AgentAddress, c.CertDir, c.SvidFileName, c.SvidKeyFileName, c.SvidBundleFileName)
 }
 
 // AttestationFixture holds resource names for a self-contained attestation test environment.
