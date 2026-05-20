@@ -267,6 +267,44 @@ func ParsePEMCertificate(pemContent string) (*pem.Block, []byte, *x509.Certifica
 	return block, rest, cert, nil
 }
 
+// ReadBundlePEM reads /certs/bundle.pem from the given pod container.
+func ReadBundlePEM(ctx context.Context, namespace, podName, containerName string) (string, error) {
+	stdout, stderr, err := ExecInPod(ctx, namespace, podName, containerName, []string{"cat", "/certs/bundle.pem"})
+	if err != nil {
+		return "", fmt.Errorf("failed to read bundle.pem from pod (stderr: %s): %w", strings.TrimSpace(stderr), err)
+	}
+	trimmed := strings.TrimSpace(stdout)
+	if trimmed == "" {
+		return "", fmt.Errorf("bundle.pem content must not be empty")
+	}
+	return stdout, nil
+}
+
+// ParseAllPEMCertificates parses all CERTIFICATE PEM blocks from pemContent.
+func ParseAllPEMCertificates(pemContent string) ([]*x509.Certificate, error) {
+	var certs []*x509.Certificate
+	data := []byte(pemContent)
+	for {
+		var block *pem.Block
+		block, data = pem.Decode(data)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse certificate: %w", err)
+		}
+		certs = append(certs, cert)
+	}
+	if len(certs) == 0 {
+		return nil, fmt.Errorf("no CERTIFICATE PEM blocks found")
+	}
+	return certs, nil
+}
+
 // ReadAndParseSVIDCertificate reads /certs/svid.pem from the pod and parses the first
 // certificate PEM block.
 func ReadAndParseSVIDCertificate(ctx context.Context, namespace, podName, containerName string) (string, *pem.Block, []byte, *x509.Certificate, error) {
@@ -960,8 +998,12 @@ func SetupAttestationTest(ctx context.Context, k8sClient client.Client, clientse
 	Expect(k8sClient.Create(ctx, cspiffeID)).To(Succeed(), "failed to create ClusterSPIFFEID")
 
 	DeferCleanup(func(cleanupCtx context.Context) {
-		_ = k8sClient.Delete(cleanupCtx, cspiffeID)
-		_ = k8sClient.Delete(cleanupCtx, attestationNS)
+		if err := k8sClient.Delete(cleanupCtx, cspiffeID); err != nil {
+			fmt.Fprintf(GinkgoWriter, "cleanup: failed to delete ClusterSPIFFEID %q: %v\n", cspiffeID.Name, err)
+		}
+		if err := k8sClient.Delete(cleanupCtx, attestationNS); err != nil {
+			fmt.Fprintf(GinkgoWriter, "cleanup: failed to delete namespace %q: %v\n", attestationNS.Name, err)
+		}
 	})
 
 	By("Creating ServiceAccount")

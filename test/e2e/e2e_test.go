@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"strings"
 	"time"
@@ -173,7 +174,7 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 				Spec: operatorv1alpha1.SpireServerSpec{
 					JwtIssuer:           jwtIssuer,
 					CAValidity:          metav1.Duration{Duration: 24 * time.Hour},
-					DefaultX509Validity: metav1.Duration{Duration: 1 * time.Hour},
+					DefaultX509Validity: metav1.Duration{Duration: utils.DefaultX509SVIDTTL},
 					DefaultJWTValidity:  metav1.Duration{Duration: 5 * time.Minute},
 					CASubject: operatorv1alpha1.CASubject{
 						CommonName:   appDomain,
@@ -397,62 +398,98 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 	})
 
 	Context("SpireAgent attestation", func() {
-		It("svid.pem should be a valid X.509 certificate", Label("reconciliation"), func() {
-			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "svid-x509", nil)
+		Context("SVID validation", func() {
+			var f utils.AttestationFixture
 
-			By("Reading and parsing svid.pem")
-			_, block, rest, cert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
-			Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
+			BeforeAll(func() {
+				f = utils.SetupAttestationTest(testCtx, k8sClient, clientset, "svid-validation", nil)
+			})
 
-			By("Validating PEM encoding")
-			Expect(block).NotTo(BeNil(), "svid.pem must contain a valid PEM block")
-			Expect(block.Type).To(Equal("CERTIFICATE"), "PEM block type must be CERTIFICATE")
-			Expect(rest).To(Satisfy(func(b []byte) bool {
-				trimmed := strings.TrimSpace(string(b))
-				if len(trimmed) == 0 {
-					return true
+			It("svid.pem should be a valid X.509 certificate", Label("attestation"), func() {
+				By("Reading and parsing svid.pem")
+				_, block, rest, cert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+				Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
+
+				By("Validating PEM encoding")
+				Expect(block).NotTo(BeNil(), "svid.pem must contain a valid PEM block")
+				Expect(block.Type).To(Equal("CERTIFICATE"), "PEM block type must be CERTIFICATE")
+				Expect(rest).To(Satisfy(func(b []byte) bool {
+					trimmed := strings.TrimSpace(string(b))
+					if len(trimmed) == 0 {
+						return true
+					}
+					_, _, _, parseErr := utils.ParsePEMCertificate(trimmed)
+					return parseErr == nil
+				}), "remaining data after first PEM block must be empty or another valid PEM block")
+
+				By("Parsing X.509 certificate")
+				Expect(cert.NotBefore.Before(time.Now())).To(BeTrue(),
+					"certificate NotBefore (%s) must be in the past", cert.NotBefore)
+				Expect(cert.NotAfter.After(time.Now())).To(BeTrue(),
+					"certificate NotAfter (%s) must be in the future", cert.NotAfter)
+			})
+
+			It("SVID SPIFFE ID should match the expected value from ClusterSPIFFEID template", Label("attestation"), func() {
+				By("Reading and parsing svid.pem")
+				_, _, _, cert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+				Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
+
+				By("Verifying SPIFFE ID in URI SAN")
+				expectedSPIFFEID := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", appDomain, f.Namespace, f.SAName)
+				Expect(cert.URIs).NotTo(BeEmpty(), "certificate must contain at least one URI SAN")
+				Expect(cert.URIs[0].String()).To(Equal(expectedSPIFFEID),
+					"SVID SPIFFE ID must match expected value")
+			})
+
+			It("SVID expiry time should be within valid TTL bounds", Label("attestation"), func() {
+				By("Reading and parsing svid.pem")
+				_, _, _, cert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+				Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
+
+				By("Verifying TTL is within valid bounds")
+				ttl := cert.NotAfter.Sub(cert.NotBefore)
+				fmt.Fprintf(GinkgoWriter, "SVID TTL: %s (NotBefore=%s, NotAfter=%s)\n", ttl, cert.NotBefore, cert.NotAfter)
+				Expect(ttl).To(BeNumerically(">", 0), "TTL must be positive")
+				Expect(ttl).To(BeNumerically("<=", utils.DefaultX509SVIDTTL),
+					"TTL must not exceed configured DefaultX509Validity (%s)", utils.DefaultX509SVIDTTL)
+				Expect(cert.NotAfter.After(time.Now())).To(BeTrue(), "certificate must not be expired")
+			})
+
+			It("bundle.pem should be a valid CA and svid.pem should chain to it", Label("attestation"), func() {
+				By("Reading and parsing bundle.pem")
+				bundlePEM, err := utils.ReadBundlePEM(testCtx, f.Namespace, f.PodName, f.AppContainer)
+				Expect(err).NotTo(HaveOccurred(), "failed to read bundle.pem from pod")
+
+				bundleCerts, err := utils.ParseAllPEMCertificates(bundlePEM)
+				Expect(err).NotTo(HaveOccurred(), "failed to parse bundle.pem certificates")
+				Expect(bundleCerts).NotTo(BeEmpty(), "bundle.pem must contain at least one certificate")
+
+				By("Verifying bundle certificates are CAs")
+				for i, ca := range bundleCerts {
+					Expect(ca.IsCA).To(BeTrue(), "bundle certificate [%d] must be a CA", i)
+					fmt.Fprintf(GinkgoWriter, "bundle cert [%d]: Subject=%s, IsCA=%v\n", i, ca.Subject, ca.IsCA)
 				}
-				_, _, _, parseErr := utils.ParsePEMCertificate(trimmed)
-				return parseErr == nil
-			}), "remaining data after first PEM block must be empty or another valid PEM block")
 
-			By("Parsing X.509 certificate")
-			Expect(cert.NotBefore.Before(time.Now())).To(BeTrue(),
-				"certificate NotBefore (%s) must be in the past", cert.NotBefore)
-			Expect(cert.NotAfter.After(time.Now())).To(BeTrue(),
-				"certificate NotAfter (%s) must be in the future", cert.NotAfter)
+				By("Building trust pool from bundle.pem")
+				rootPool := x509.NewCertPool()
+				for _, ca := range bundleCerts {
+					rootPool.AddCert(ca)
+				}
+
+				By("Reading and parsing svid.pem")
+				_, _, _, svidCert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+				Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
+
+				By("Verifying svid.pem chains to bundle.pem")
+				_, err = svidCert.Verify(x509.VerifyOptions{
+					Roots:     rootPool,
+					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+				})
+				Expect(err).NotTo(HaveOccurred(), "svid.pem must chain to bundle.pem")
+			})
 		})
 
-		It("SVID SPIFFE ID should match the expected value from ClusterSPIFFEID template", Label("reconciliation"), func() {
-			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "spiffeid-match", nil)
-
-			By("Reading and parsing svid.pem")
-			_, _, _, cert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
-			Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
-
-			By("Verifying SPIFFE ID in URI SAN")
-			expectedSPIFFEID := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", appDomain, f.Namespace, f.SAName)
-			Expect(cert.URIs).NotTo(BeEmpty(), "certificate must contain at least one URI SAN")
-			Expect(cert.URIs[0].String()).To(Equal(expectedSPIFFEID),
-				"SVID SPIFFE ID must match expected value")
-		})
-
-		It("SVID expiry time should be within valid TTL bounds", Label("reconciliation"), func() {
-			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "svid-expiry", nil)
-
-			By("Reading and parsing svid.pem")
-			_, _, _, cert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
-			Expect(err).NotTo(HaveOccurred(), "failed to read and parse svid.pem from pod")
-
-			By("Verifying TTL is within valid bounds")
-			ttl := cert.NotAfter.Sub(cert.NotBefore)
-			fmt.Fprintf(GinkgoWriter, "SVID TTL: %s (NotBefore=%s, NotAfter=%s)\n", ttl, cert.NotBefore, cert.NotAfter)
-			Expect(ttl).To(BeNumerically(">", 0), "TTL must be positive")
-			Expect(ttl).To(BeNumerically("<=", 24*time.Hour), "TTL must not exceed 24 hours")
-			Expect(cert.NotAfter.After(time.Now())).To(BeTrue(), "certificate must not be expired")
-		})
-
-		It("SVID should be rotated before expiry", Label("reconciliation"), func() {
+		It("SVID should be rotated before expiry", Label("attestation"), func() {
 			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "svid-rotation", func(spec *spiffev1alpha1.ClusterSPIFFEIDSpec) {
 				spec.TTL = metav1.Duration{Duration: 60 * time.Second}
 			})
@@ -464,20 +501,25 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 			fmt.Fprintf(GinkgoWriter, "initial SVID serial: %s\n", initialSerial)
 
 			By("Waiting for SVID rotation (serial number change)")
+			var rotatedCert *x509.Certificate
 			Eventually(func() string {
 				_, _, _, c, parseErr := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
 				if parseErr != nil {
 					return initialSerial
 				}
+				rotatedCert = c
 				return c.SerialNumber.String()
 			}).WithTimeout(3 * time.Minute).WithPolling(10 * time.Second).ShouldNot(Equal(initialSerial),
 				"SVID serial number must change after rotation")
 
 			By("Verifying rotated certificate is still valid")
-			_, _, _, rotatedCert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
-			Expect(err).NotTo(HaveOccurred(), "failed to read and parse rotated svid.pem from pod")
+			Expect(rotatedCert).NotTo(BeNil(), "rotated certificate must have been captured")
 			Expect(rotatedCert.NotBefore.Before(time.Now())).To(BeTrue(), "rotated cert NotBefore must be in the past")
 			Expect(rotatedCert.NotAfter.After(time.Now())).To(BeTrue(), "rotated cert NotAfter must be in the future")
+
+			By("Verifying rotated certificate is genuinely newer than the initial one")
+			Expect(rotatedCert.NotBefore.After(initialCert.NotBefore)).To(BeTrue(),
+				"rotated cert must have a later NotBefore than initial cert")
 			fmt.Fprintf(GinkgoWriter, "rotated SVID serial: %s\n", rotatedCert.SerialNumber.String())
 		})
 	})

@@ -45,6 +45,8 @@ const (
 	SpiffeHelperContainerName = "spiffe-helper"
 	SpiffeHelperImage         = "ghcr.io/spiffe/spiffe-helper:0.11.0"
 
+	DefaultX509SVIDTTL = 1 * time.Hour
+
 	DefaultInterval    = 10 * time.Second
 	ShortInterval      = 5 * time.Second
 	DefaultTimeout     = 5 * time.Minute
