@@ -19,7 +19,9 @@ package utils
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -962,9 +964,12 @@ type AttestationFixture struct {
 // Each call produces an isolated environment; cleanup is registered via DeferCleanup.
 // Pass a non-nil cspiffeIDMutator to customise the ClusterSPIFFEID spec (e.g. set a short TTL).
 func SetupAttestationTest(ctx context.Context, k8sClient client.Client, clientset kubernetes.Interface, prefix string, cspiffeIDMutator func(*spiffev1alpha1.ClusterSPIFFEIDSpec)) AttestationFixture {
-	ns := fmt.Sprintf("e2e-%s-test", prefix)
-	podName := fmt.Sprintf("%s-test-pod", prefix)
-	saName := fmt.Sprintf("%s-test-sa", prefix)
+	randBytes := make([]byte, 3)
+	_, _ = rand.Read(randBytes)
+	suffix := hex.EncodeToString(randBytes)
+	ns := fmt.Sprintf("e2e-%s-test-%s", prefix, suffix)
+	podName := fmt.Sprintf("%s-test-pod-%s", prefix, suffix)
+	saName := fmt.Sprintf("%s-test-sa-%s", prefix, suffix)
 	appContainer := "app"
 
 	attestationNS := &corev1.Namespace{
@@ -987,7 +992,7 @@ func SetupAttestationTest(ctx context.Context, k8sClient client.Client, clientse
 	}
 
 	cspiffeID := &spiffev1alpha1.ClusterSPIFFEID{
-		ObjectMeta: metav1.ObjectMeta{Name: prefix + "-cspiffeid"},
+		ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-cspiffeid-%s", prefix, suffix)},
 		Spec:       spec,
 	}
 
