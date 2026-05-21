@@ -450,8 +450,9 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 				ttl := cert.NotAfter.Sub(cert.NotBefore)
 				fmt.Fprintf(GinkgoWriter, "SVID TTL: %s (NotBefore=%s, NotAfter=%s)\n", ttl, cert.NotBefore, cert.NotAfter)
 				Expect(ttl).To(BeNumerically(">", 0), "TTL must be positive")
-				Expect(ttl).To(BeNumerically("<=", utils.DefaultX509SVIDTTL),
-					"TTL must not exceed configured DefaultX509Validity (%s)", utils.DefaultX509SVIDTTL)
+				Expect(ttl).To(BeNumerically("<=", utils.DefaultX509SVIDTTL+utils.ClockSkewTolerance),
+					"TTL must not exceed configured DefaultX509Validity (%s) plus clock skew tolerance (%s)",
+					utils.DefaultX509SVIDTTL, utils.ClockSkewTolerance)
 				Expect(cert.NotAfter.After(time.Now())).To(BeTrue(), "certificate must not be expired")
 			})
 
