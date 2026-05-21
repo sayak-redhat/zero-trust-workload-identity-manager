@@ -402,7 +402,9 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 			var f utils.AttestationFixture
 
 			BeforeAll(func() {
-				f = utils.SetupAttestationTest(testCtx, k8sClient, clientset, "svid-validation", nil)
+				setupCtx, cancel := context.WithTimeout(context.Background(), utils.TestContextTimeout)
+				DeferCleanup(cancel)
+				f = utils.SetupAttestationTest(setupCtx, k8sClient, clientset, "svid-validation", nil)
 			})
 
 			It("svid.pem should be a valid X.509 certificate", Label("attestation"), func() {
