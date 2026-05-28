@@ -41,6 +41,29 @@ Ask yourself: "Would a senior QE engineer say these are redundant?" If yes, dedu
 
 The test: Every test case should trace directly to the ADR's stated goals/risks or the PR's changed behaviors.
 
+## 3a. Operator Deployment Context (OLM-Managed)
+
+**The ZTWIM operator is installed and managed via OLM (Operator Lifecycle Manager). Never assume direct deployment control.**
+
+- The operator is deployed via a **ClusterServiceVersion (CSV)**, not a standalone Deployment.
+- **Never use `oc scale deployment`** to change replica count — OLM will immediately revert it. Use CSV patch instead:
+  ```
+  oc patch csv <csv-name> -n zero-trust-workload-identity-manager \
+    --type=json -p '[{"op":"replace","path":"/spec/install/spec/deployments/0/spec/replicas","value":N}]'
+  ```
+- **Never use `oc edit deployment`** to change container args/env — patch the CSV or Subscription instead.
+- To add environment variables (e.g., `CREATE_ONLY_MODE`), patch the **Subscription**:
+  ```
+  oc patch subscription openshift-zero-trust-workload-identity-manager \
+    -n zero-trust-workload-identity-manager --type='merge' \
+    -p '{"spec":{"config":{"env":[{"name":"ENV_VAR","value":"value"}]}}}'
+  ```
+- Operator namespace: `zero-trust-workload-identity-manager`
+- CSV name pattern: `zero-trust-workload-identity-manager.v<VERSION>`
+- Operand CRs: SpireServer, SpireAgent, SpiffeCSIDriver, SpireOIDCDiscoveryProvider, ZeroTrustWorkloadIdentityManager
+- All operands use the name `cluster` (e.g., `oc get spireagent cluster`)
+- When writing test steps involving scaling, env changes, or operator config, always use the OLM-appropriate method (CSV/Subscription patch), not direct deployment manipulation.
+
 ## 4. Traceability Always
 
 **Every test traces back to a source. No orphan tests.**

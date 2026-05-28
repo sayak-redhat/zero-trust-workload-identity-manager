@@ -259,6 +259,15 @@ Each requirement must be:
 
 ## 6. Test Generation Rules
 
+**Total test case budget: 8–10 test cases maximum.** Consolidate aggressively — each test should cover multiple requirements where naturally combinable. Prefer fewer, broader tests over many narrow ones. If a single E2E test can validate 3 requirements in sequence, write one test with 3 assertion steps, not 3 separate tests. Distribute across tiers based on what gives the most coverage per test:
+- **E2E (4–5 tests):** Primary focus. Each test should cover a distinct scenario (happy path, conflict, recovery, edge case).
+- **MQE (1–2 tests):** One acceptance, one exploratory. Combine scenarios within each.
+- **INT (1–2 tests):** Only if reconciler/webhook interactions are clearly testable and not already covered by E2E.
+- **UT (1–2 tests):** Only for new pure utility functions. Combine positive + negative cases into one test with sub-cases.
+- **NFT (0–1 test):** Only if the change has an explicit performance/recovery dimension.
+
+If you reach 10 tests and still have uncovered requirements, consolidate further — merge related tests before adding new ones. Never exceed 10 tests.
+
 **Shift-left placement:** Tier 1-2 from ADR "How" (contracts, branches). Tier 3 from "Goals" (black-box outcomes). Tier 4 from human judgment. Tier 5 from quality attributes.
 
 **Regression distinction:** Tier 3 regression = automated black-box checks. Tier 5 regression = broader soak/cross-cutting. Don't duplicate the same observable in both.
@@ -373,6 +382,9 @@ Each requirement must be:
 | Manual QE | N | N | N | N |
 | Non-Functional | N | N | N | N |
 | **Total** | **N** | **N** | **N** | **N** |
+
+## Generation Stats
+<See Section 11 — required footer with test count, requirements coverage, word count, and estimated tokens>
 ```
 
 ---
@@ -383,13 +395,13 @@ Before returning the test plan, ALL gates must pass:
 
 | Gate | Requirement |
 | --- | --- |
+| **Budget respected** | **Total test cases is 8–10. If over 10, consolidate before outputting.** |
 | ADR fully read | Decomposition complete; missing sections noted |
 | Requirements extracted | Every goal and risk maps to at least one REQ |
-| Tier 1 coverage | Positive + negative paths for logic in "How" |
-| Tier 2 coverage | One test per component interaction |
-| Tier 3 minimums | Smoke + negative + regression + lifecycle |
-| Tier 4 minimums | Acceptance + exploratory |
-| Tier 5 minimums | Performance + recovery scenario |
+| Tier coverage | Each tier has tests within its allocated budget (Section 6); consolidate sub-cases within tests rather than adding tests |
+| Tier 3 minimums | Smoke + negative + regression + lifecycle (can be combined into fewer tests) |
+| Tier 4 minimums | Acceptance + exploratory (can be one combined test) |
+| Tier 5 minimums | Performance or recovery scenario (only if change warrants it; 0 is acceptable) |
 | Traceability complete | Every REQ in matrix with test or "NOT COVERED" justification |
 | Traceability source | Every test cites ADR or Jira AC — not PRs/commits |
 | No tier duplication | No same-observable regression in both Tier 3 and Tier 5 |
@@ -397,6 +409,7 @@ Before returning the test plan, ALL gates must pass:
 | Cleanup specified | Every test that creates resources specifies cleanup |
 | Priority assigned | Every test has Critical / High / Medium |
 | Scope respected | No tests for Non-Goals unless regression guard |
+| No redundancy | If two tests cover the same observable behavior, merge them into one |
 
 ---
 
@@ -490,13 +503,15 @@ Infer requirements from the diff. Use prefix `PR-REQ-` and assign confidence lev
 
 ### 10.3 Test Generation Priority (PR Mode)
 
-Generate tests in this priority order:
+**Budget: 8–10 test cases total (see Section 6).** Allocate across tiers in this priority:
 
-1. **Tier 3 (E2E)** — Most valuable for PRs. Black-box cluster validation.
-2. **Tier 4 (Manual)** — Exploratory tests for areas where intent is unclear.
-3. **Tier 2 (Integration)** — If reconciler/webhook logic is clearly visible in diff.
-4. **Tier 1 (Unit)** — If pure functions/helpers are clearly visible in diff.
-5. **Tier 5 (NFT)** — Only if the PR explicitly touches performance/security/recovery paths.
+1. **Tier 3 (E2E): 4–5 tests** — Primary focus. Each test covers a distinct user-facing scenario. Combine related assertions into one test instead of splitting.
+2. **Tier 4 (Manual): 1–2 tests** — One acceptance + one exploratory. Combine multiple exploratory angles into a single test.
+3. **Tier 2 (Integration): 1–2 tests** — Only if reconciler/webhook logic has distinct interaction paths not exercisable via E2E.
+4. **Tier 1 (Unit): 0–1 test** — Only for new pure utility functions. Combine all positive + negative sub-cases into ONE test.
+5. **Tier 5 (NFT): 0–1 test** — Only if the PR explicitly touches performance/security/recovery paths.
+
+If a behavior is fully testable at a higher tier (E2E), do NOT duplicate it at a lower tier (UT/INT). Each test must justify its existence by covering something no other test in the plan covers.
 
 Use the same test case format as ADR Mode (Section 7), with these additions:
 - **Derived from:** `PR diff — <filename>:<line-range>` or PR description
@@ -559,12 +574,16 @@ Use the same test case format as ADR Mode (Section 7), with these additions:
 - **Cannot determine without ADR:** <list>
 - **Recommend ADR review for:** <areas where coverage depends on intent>
 - **Existing tests that may need update:** <test files affected by this PR>
+
+## Generation Stats
+<See Section 11 — required footer with test count, requirements coverage, word count, and estimated tokens>
 ```
 
 ### 10.5 Quality Gates (PR Mode)
 
 | Gate | Requirement |
 | --- | --- |
+| **Budget respected** | **Total test cases is 8–10. If over 10, merge related tests before outputting.** |
 | PR fully read | Diff analyzed, all changed files categorized |
 | Requirements inferred | Every significant code change maps to a requirement |
 | Confidence marked | Every requirement has High/Medium/Low confidence |
@@ -575,6 +594,7 @@ Use the same test case format as ADR Mode (Section 7), with these additions:
 | No vague steps | Every step has concrete action + observable outcome |
 | Cleanup specified | Every test specifies resource cleanup |
 | Priority assigned | Every test has Critical / High / Medium |
+| No redundancy | Two tests covering the same observable must be merged into one |
 
 ### 10.6 Important Constraints (PR Mode)
 
@@ -584,3 +604,27 @@ Use the same test case format as ADR Mode (Section 7), with these additions:
 - Don't over-test refactors — if the PR is a pure refactor, generate only regression tests.
 - Match existing test style from `*_test.go` files in the repo.
 - **Output file:** Save the generated test plan as `output/test-plan-pr-<PR-NUMBER>.md` (create the `output/` directory if it doesn't exist).
+
+---
+
+## 11. Generation Stats (required footer)
+
+Every generated test plan (both ADR Mode and PR Mode) MUST end with this stats footer. Count the values from the plan you just generated.
+
+```markdown
+## Generation Stats
+
+| Metric | Value |
+| --- | --- |
+| Test cases generated | <N> |
+| Requirements identified | <N> |
+| Requirements covered | <N>/<total> |
+| Approx. output words | <count words in the generated plan> |
+| Estimated output tokens | <words × 1.3, rounded> |
+| Token estimate note | Output tokens only. Input tokens (PR diff, rules, context) are not tracked here — check Cursor usage dashboard for full cost. |
+```
+
+**How to count:**
+- **Words:** Count all words in the generated markdown output (including headings, table cells, code blocks).
+- **Estimated tokens:** Multiply word count by 1.3 (English text averages ~1.3 tokens per word).
+- This is an **approximation** (~85% accurate). Exact token counts depend on the model's tokenizer and are only available from the Cursor billing dashboard.
