@@ -1107,7 +1107,8 @@ func SetupAttestationTest(ctx context.Context, k8sClient client.Client, clientse
 // never become healthy) and does not wait for cert files.
 func SetupAttestationTestWithoutSPIFFEID(ctx context.Context, k8sClient client.Client, clientset kubernetes.Interface, prefix string) AttestationFixture {
 	randBytes := make([]byte, 3)
-	_, _ = rand.Read(randBytes)
+	_, err := rand.Read(randBytes)
+	Expect(err).NotTo(HaveOccurred(), "failed to generate random suffix for test resources")
 	suffix := hex.EncodeToString(randBytes)
 	ns := fmt.Sprintf("e2e-%s-test-%s", prefix, suffix)
 	podName := fmt.Sprintf("%s-test-pod-%s", prefix, suffix)

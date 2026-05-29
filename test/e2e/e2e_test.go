@@ -380,8 +380,8 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 
 			stdout, stderr, err := utils.ExecInPod(testCtx, utils.OperatorNamespace, operatorPod,
 				pods.Items[0].Spec.Containers[0].Name,
-				[]string{"curl", "-sk", fmt.Sprintf("https://localhost:%d/metrics", utils.OperatorMetricsPort),
-					"-H", "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"},
+				[]string{"sh", "-c",
+					fmt.Sprintf(`TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" && curl -sk -H "Authorization: Bearer ${TOKEN}" https://localhost:%d/metrics`, utils.OperatorMetricsPort)},
 			)
 			if err != nil {
 				fmt.Fprintf(GinkgoWriter, "curl via exec failed (stderr: %s): %v, falling back to Service check only\n",
@@ -595,9 +595,11 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 			f := utils.SetupAttestationTestWithoutSPIFFEID(testCtx, k8sClient, clientset, "no-spiffeid")
 
 			By("Asserting svid.pem does NOT appear in /certs/ over 60 seconds")
-			Consistently(func() string {
-				stdout, _, _ := utils.ExecInPod(testCtx, f.Namespace, f.PodName, f.AppContainer,
+			Consistently(func(g Gomega) string {
+				stdout, stderr, err := utils.ExecInPod(testCtx, f.Namespace, f.PodName, f.AppContainer,
 					[]string{"ls", "/certs/"})
+				g.Expect(err).NotTo(HaveOccurred(),
+					"exec into pod must succeed to produce a trustworthy result (stderr: %s)", strings.TrimSpace(stderr))
 				return stdout
 			}).WithTimeout(60 * time.Second).WithPolling(10 * time.Second).ShouldNot(
 				ContainSubstring("svid.pem"),
