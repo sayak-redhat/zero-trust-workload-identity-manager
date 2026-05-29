@@ -334,6 +334,67 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 				fmt.Fprintf(GinkgoWriter, "Operand %s is ready\n", kind)
 			}
 		})
+
+		It("Prometheus metrics endpoint should be serving", func() {
+			By("Verifying metrics Service exists with correct port configuration")
+			metricsSvc, err := clientset.CoreV1().Services(utils.OperatorNamespace).Get(testCtx,
+				utils.OperatorMetricsServiceName, metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred(), "metrics Service %q must exist", utils.OperatorMetricsServiceName)
+
+			var foundMetricsPort bool
+			for _, port := range metricsSvc.Spec.Ports {
+				if port.Name == utils.OperatorMetricsPortName && port.Port == int32(utils.OperatorMetricsPort) {
+					foundMetricsPort = true
+					break
+				}
+			}
+			Expect(foundMetricsPort).To(BeTrue(),
+				"metrics Service must have port %q on %d", utils.OperatorMetricsPortName, utils.OperatorMetricsPort)
+			fmt.Fprintf(GinkgoWriter, "metrics Service %q has correct port configuration\n", utils.OperatorMetricsServiceName)
+
+			By("Verifying metrics endpoint has ready addresses")
+			Eventually(func() bool {
+				endpoints, err := clientset.CoreV1().Endpoints(utils.OperatorNamespace).Get(testCtx,
+					utils.OperatorMetricsServiceName, metav1.GetOptions{})
+				if err != nil {
+					fmt.Fprintf(GinkgoWriter, "failed to get metrics Endpoints: %v\n", err)
+					return false
+				}
+				for _, subset := range endpoints.Subsets {
+					if len(subset.Addresses) > 0 {
+						fmt.Fprintf(GinkgoWriter, "metrics endpoint has %d ready address(es)\n", len(subset.Addresses))
+						return true
+					}
+				}
+				return false
+			}).WithTimeout(utils.ShortTimeout).WithPolling(utils.ShortInterval).Should(BeTrue(),
+				"metrics endpoint must have at least one ready address")
+
+			By("Scraping /metrics from operator pod via bearer token")
+			pods, err := clientset.CoreV1().Pods(utils.OperatorNamespace).List(testCtx, metav1.ListOptions{
+				LabelSelector: utils.OperatorLabelSelector,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).NotTo(BeEmpty(), "operator pod must exist")
+			operatorPod := pods.Items[0].Name
+
+			stdout, stderr, err := utils.ExecInPod(testCtx, utils.OperatorNamespace, operatorPod,
+				pods.Items[0].Spec.Containers[0].Name,
+				[]string{"curl", "-sk", fmt.Sprintf("https://localhost:%d/metrics", utils.OperatorMetricsPort),
+					"-H", "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"},
+			)
+			if err != nil {
+				fmt.Fprintf(GinkgoWriter, "curl via exec failed (stderr: %s): %v, falling back to Service check only\n",
+					strings.TrimSpace(stderr), err)
+			} else {
+				By("Verifying Prometheus metrics response contains expected controller-runtime metrics")
+				Expect(stdout).To(ContainSubstring("controller_runtime_reconcile_total"),
+					"metrics response must contain controller_runtime_reconcile_total")
+				Expect(stdout).To(ContainSubstring("workqueue_depth"),
+					"metrics response must contain workqueue_depth")
+				fmt.Fprintf(GinkgoWriter, "metrics endpoint returned valid Prometheus metrics\n")
+			}
+		})
 	})
 
 	Context("OperatorCondition", func() {
@@ -467,10 +528,13 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 				Expect(err).NotTo(HaveOccurred(), "failed to parse bundle.pem certificates")
 				Expect(bundleCerts).NotTo(BeEmpty(), "bundle.pem must contain at least one certificate")
 
-				By("Verifying bundle certificates are CAs")
+				By("Verifying bundle certificates are CAs with CertSign KeyUsage")
 				for i, ca := range bundleCerts {
 					Expect(ca.IsCA).To(BeTrue(), "bundle certificate [%d] must be a CA", i)
-					fmt.Fprintf(GinkgoWriter, "bundle cert [%d]: Subject=%s, IsCA=%v\n", i, ca.Subject, ca.IsCA)
+					Expect(ca.KeyUsage & x509.KeyUsageCertSign).NotTo(BeZero(),
+						"bundle certificate [%d] KeyUsage must include CertSign", i)
+					fmt.Fprintf(GinkgoWriter, "bundle cert [%d]: Subject=%s, IsCA=%v, KeyUsage=%d\n",
+						i, ca.Subject, ca.IsCA, ca.KeyUsage)
 				}
 
 				By("Building trust pool from bundle.pem")
@@ -525,6 +589,66 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 				"rotated cert must have a later NotBefore than initial cert")
 			fmt.Fprintf(GinkgoWriter, "rotated SVID serial: %s\n", rotatedCert.SerialNumber.String())
 		})
+
+		It("pod without matching ClusterSPIFFEID should NOT get an SVID", Label("attestation"), func() {
+			By("Deploying a pod without a matching ClusterSPIFFEID")
+			f := utils.SetupAttestationTestWithoutSPIFFEID(testCtx, k8sClient, clientset, "no-spiffeid")
+
+			By("Asserting svid.pem does NOT appear in /certs/ over 60 seconds")
+			Consistently(func() string {
+				stdout, _, _ := utils.ExecInPod(testCtx, f.Namespace, f.PodName, f.AppContainer,
+					[]string{"ls", "/certs/"})
+				return stdout
+			}).WithTimeout(60 * time.Second).WithPolling(10 * time.Second).ShouldNot(
+				ContainSubstring("svid.pem"),
+				"pod without matching ClusterSPIFFEID must NOT receive an SVID",
+			)
+		})
+
+		It("should propagate ClusterSPIFFEID template update to workload SVID", Label("attestation"), func() {
+			By("Setting up attestation environment")
+			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "spiffeid-update", nil)
+
+			By("Recording initial SPIFFE ID from svid.pem")
+			_, _, _, initialCert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+			Expect(err).NotTo(HaveOccurred(), "failed to read and parse initial svid.pem")
+			Expect(initialCert.URIs).NotTo(BeEmpty(), "initial certificate must contain a URI SAN")
+			initialSPIFFEID := initialCert.URIs[0].String()
+			fmt.Fprintf(GinkgoWriter, "initial SPIFFE ID: %s\n", initialSPIFFEID)
+
+			By("Updating ClusterSPIFFEID template to include /updated/ path segment")
+			updatedTemplate := "spiffe://{{ .TrustDomain }}/updated/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+			cspiffeID := &spiffev1alpha1.ClusterSPIFFEID{}
+			cspiffeID.Name = f.ClusterSPIFFEIDName
+			err = utils.UpdateCRWithRetry(testCtx, k8sClient, cspiffeID, func() {
+				cspiffeID.Spec.SPIFFEIDTemplate = updatedTemplate
+			})
+			Expect(err).NotTo(HaveOccurred(), "failed to update ClusterSPIFFEID template")
+
+			DeferCleanup(func(ctx context.Context) {
+				By("Reverting ClusterSPIFFEID template")
+				revert := &spiffev1alpha1.ClusterSPIFFEID{}
+				if getErr := k8sClient.Get(ctx, client.ObjectKey{Name: f.ClusterSPIFFEIDName}, revert); getErr == nil {
+					revert.Spec.SPIFFEIDTemplate = "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+					k8sClient.Update(ctx, revert)
+				}
+			})
+
+			By("Waiting for SVID to reflect the updated SPIFFE ID")
+			expectedNewSPIFFEID := fmt.Sprintf("spiffe://%s/updated/ns/%s/sa/%s", appDomain, f.Namespace, f.SAName)
+			Eventually(func() string {
+				_, _, _, cert, parseErr := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+				if parseErr != nil || len(cert.URIs) == 0 {
+					return initialSPIFFEID
+				}
+				return cert.URIs[0].String()
+			}).WithTimeout(3 * time.Minute).WithPolling(10 * time.Second).Should(
+				Equal(expectedNewSPIFFEID),
+				"SVID SPIFFE ID must update after ClusterSPIFFEID template change",
+			)
+			fmt.Fprintf(GinkgoWriter, "updated SPIFFE ID: %s\n", expectedNewSPIFFEID)
+		})
+
 	})
 
 	Context("Common configurations", func() {

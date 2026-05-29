@@ -41,6 +41,10 @@ const (
 	SpireOIDCDiscoveryProviderConfigMapName  = "spire-spiffe-oidc-discovery-provider"
 	SpireOIDCDiscoveryProviderConfigKey      = "oidc-discovery-provider.conf"
 
+	OperatorMetricsServiceName = "zero-trust-workload-identity-manager-metrics-service"
+	OperatorMetricsPortName    = "metrics-https"
+	OperatorMetricsPort        = 8443
+
 	SpiffeHelperConfigMapName = "spiffe-helper-config"
 	SpiffeHelperContainerName = "spiffe-helper"
 	SpiffeHelperImage         = "ghcr.io/spiffe/spiffe-helper:0.11.0"
