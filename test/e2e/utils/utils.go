@@ -1030,7 +1030,7 @@ func SetupAttestationTest(ctx context.Context, k8sClient client.Client, clientse
 					},
 				},
 				{
-					Name: appContainer, Image: "busybox",
+					Name: appContainer, Image: AppContainerImage,
 					Command: []string{"sleep", "3600"},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "certs", MountPath: "/certs"},

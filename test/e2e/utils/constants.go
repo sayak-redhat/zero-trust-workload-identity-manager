@@ -45,6 +45,8 @@ const (
 	OperatorMetricsPortName    = "metrics-https"
 	OperatorMetricsPort        = 8443
 
+	AppContainerImage = "busybox"
+
 	SpiffeHelperConfigMapName = "spiffe-helper-config"
 	SpiffeHelperContainerName = "spiffe-helper"
 	SpiffeHelperImage         = "ghcr.io/spiffe/spiffe-helper:0.11.0"

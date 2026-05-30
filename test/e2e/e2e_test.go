@@ -30,6 +30,7 @@ import (
 	spiffev1alpha1 "github.com/spiffe/spire-controller-manager/api/v1alpha1"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -607,7 +608,13 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 			By("Waiting for pod to be fully removed")
 			Eventually(func() bool {
 				err := k8sClient.Get(testCtx, types.NamespacedName{Name: f.PodName, Namespace: f.Namespace}, &corev1.Pod{})
-				return err != nil
+				if apierrors.IsNotFound(err) {
+					return true
+				}
+				if err != nil {
+					fmt.Fprintf(GinkgoWriter, "transient error while waiting for pod %s/%s deletion: %v\n", f.Namespace, f.PodName, err)
+				}
+				return false
 			}).WithTimeout(2 * time.Minute).WithPolling(5 * time.Second).Should(BeTrue(),
 				"old pod %s/%s should be fully removed", f.Namespace, f.PodName)
 
@@ -632,7 +639,7 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 							},
 						},
 						{
-							Name: f.AppContainer, Image: "busybox",
+							Name: f.AppContainer, Image: utils.AppContainerImage,
 							Command: []string{"sleep", "3600"},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "certs", MountPath: "/certs"},
