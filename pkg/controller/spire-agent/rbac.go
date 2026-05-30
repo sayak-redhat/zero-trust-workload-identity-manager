@@ -66,6 +66,9 @@ func (r *SpireAgentReconciler) reconcileClusterRole(ctx context.Context, agent *
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create cluster role")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create ClusterRole: %v", err),
@@ -77,7 +80,6 @@ func (r *SpireAgentReconciler) reconcileClusterRole(ctx context.Context, agent *
 		return nil
 	}
 
-	// Resource exists, check if we need to update
 	if createOnlyMode {
 		r.log.V(1).Info("ClusterRole exists, skipping update due to create-only mode", "name", desired.Name)
 		return nil
@@ -131,6 +133,9 @@ func (r *SpireAgentReconciler) reconcileClusterRoleBinding(ctx context.Context, 
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create cluster role binding")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create ClusterRoleBinding: %v", err),
@@ -142,7 +147,6 @@ func (r *SpireAgentReconciler) reconcileClusterRoleBinding(ctx context.Context, 
 		return nil
 	}
 
-	// Resource exists, check if we need to update
 	if createOnlyMode {
 		r.log.V(1).Info("ClusterRoleBinding exists, skipping update due to create-only mode", "name", desired.Name)
 		return nil

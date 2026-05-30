@@ -43,6 +43,9 @@ func (r *SpireOidcDiscoveryProviderReconciler) reconcileClusterSpiffeIDs(ctx con
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desiredOIDC); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desiredOIDC, r.log, statusMgr, ClusterSPIFFEIDAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "Failed to create oidc cluster spiffe id")
 			statusMgr.AddCondition(ClusterSPIFFEIDAvailable, "SpireClusterSpiffeIDCreationFailed",
 				err.Error(),
@@ -99,6 +102,9 @@ func (r *SpireOidcDiscoveryProviderReconciler) reconcileClusterSpiffeIDs(ctx con
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desiredDefault); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desiredDefault, r.log, statusMgr, ClusterSPIFFEIDAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "Failed to create DefaultFallbackClusterSPIFFEID")
 			statusMgr.AddCondition(ClusterSPIFFEIDAvailable, "SpireClusterSpiffeIDCreationFailed",
 				err.Error(),

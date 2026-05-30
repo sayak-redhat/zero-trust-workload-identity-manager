@@ -39,4 +39,5 @@ const (
 	ReasonReady            string = "Ready"
 	ReasonInProgress       string = "Progressing"
 	ReasonOperandsNotReady string = "OperandsNotReady"
+	ReasonResourceConflict string = "ResourceConflict"
 )

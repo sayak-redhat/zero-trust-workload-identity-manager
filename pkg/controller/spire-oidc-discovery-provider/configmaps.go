@@ -42,6 +42,9 @@ func (r *SpireOidcDiscoveryProviderReconciler) reconcileConfigMap(ctx context.Co
 	err = r.ctrlClient.Get(ctx, types.NamespacedName{Name: cm.Name, Namespace: cm.Namespace}, &existingOidcCm)
 	if err != nil && kerrors.IsNotFound(err) {
 		if err = r.ctrlClient.Create(ctx, cm); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, cm, r.log, statusMgr, ConfigMapAvailable); conflictErr != nil {
+				return "", conflictErr
+			}
 			r.log.Error(err, "Failed to create ConfigMap")
 			statusMgr.AddCondition(ConfigMapAvailable, "SpireOIDCConfigMapCreationFailed",
 				err.Error(),
@@ -49,22 +52,24 @@ func (r *SpireOidcDiscoveryProviderReconciler) reconcileConfigMap(ctx context.Co
 			return "", err
 		}
 		r.log.Info("Created ConfigMap", "Namespace", cm.Namespace, "Name", cm.Name)
-	} else if err == nil && (utils.GenerateMapHash(existingOidcCm.Data) != utils.GenerateMapHash(cm.Data) ||
-		!equality.Semantic.DeepEqual(existingOidcCm.Labels, cm.Labels)) {
-		if createOnlyMode {
-			r.log.Info("Skipping ConfigMap update due to create-only mode", "Namespace", cm.Namespace, "Name", cm.Name)
-		} else {
-			cm.ResourceVersion = existingOidcCm.ResourceVersion
-			if err = r.ctrlClient.Update(ctx, cm); err != nil {
-				r.log.Error(err, "Failed to update ConfigMap", "Namespace", cm.Namespace, "Name", cm.Name)
-				statusMgr.AddCondition(ConfigMapAvailable, "SpireOIDCConfigMapCreationFailed",
-					err.Error(),
-					metav1.ConditionFalse)
-				return "", err
+	} else if err == nil {
+		if utils.GenerateMapHash(existingOidcCm.Data) != utils.GenerateMapHash(cm.Data) ||
+			!equality.Semantic.DeepEqual(existingOidcCm.Labels, cm.Labels) {
+			if createOnlyMode {
+				r.log.Info("Skipping ConfigMap update due to create-only mode", "Namespace", cm.Namespace, "Name", cm.Name)
+			} else {
+				cm.ResourceVersion = existingOidcCm.ResourceVersion
+				if err = r.ctrlClient.Update(ctx, cm); err != nil {
+					r.log.Error(err, "Failed to update ConfigMap", "Namespace", cm.Namespace, "Name", cm.Name)
+					statusMgr.AddCondition(ConfigMapAvailable, "SpireOIDCConfigMapCreationFailed",
+						err.Error(),
+						metav1.ConditionFalse)
+					return "", err
+				}
+				r.log.Info("Updated ConfigMap", "Namespace", cm.Namespace, "Name", cm.Name)
 			}
-			r.log.Info("Updated ConfigMap", "Namespace", cm.Namespace, "Name", cm.Name)
 		}
-	} else if err != nil {
+	} else {
 		r.log.Error(err, "Failed to get ConfigMap")
 		statusMgr.AddCondition(ConfigMapAvailable, "SpireOIDCConfigMapCreationFailed",
 			err.Error(),

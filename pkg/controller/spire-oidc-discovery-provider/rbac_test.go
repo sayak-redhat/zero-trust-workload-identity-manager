@@ -3,6 +3,7 @@ package spire_oidc_discovery_provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -39,11 +40,13 @@ func newTestStore() *testStore {
 }
 
 func (s *testStore) key(obj client.Object) string {
-	return obj.GetNamespace() + "/" + obj.GetName()
+	typeName := fmt.Sprintf("%T", obj)
+	return typeName + "/" + obj.GetNamespace() + "/" + obj.GetName()
 }
 
 func (s *testStore) Get(ctx context.Context, key client.ObjectKey, obj client.Object) error {
-	k := key.Namespace + "/" + key.Name
+	typeName := fmt.Sprintf("%T", obj)
+	k := typeName + "/" + key.Namespace + "/" + key.Name
 	stored, ok := s.objects[k]
 	if !ok {
 		return kerrors.NewNotFound(rbacv1.Resource(""), key.Name)
@@ -303,7 +306,7 @@ func TestReconcileExternalCertRole(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      utils.SpireOIDCExternalCertRoleName,
 							Namespace: utils.GetOperatorNamespace(),
-							Labels:    map[string]string{"old-label": "old-value"},
+							Labels:    map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 						},
 						Rules: []rbacv1.PolicyRule{
 							{
@@ -345,7 +348,7 @@ func TestReconcileExternalCertRole(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      utils.SpireOIDCExternalCertRoleName,
 							Namespace: utils.GetOperatorNamespace(),
-							Labels:    map[string]string{"old-label": "old-value"},
+							Labels:    map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 							OwnerReferences: []metav1.OwnerReference{
 								{
 									APIVersion: "ztwim.openshift.io/v1alpha1",
@@ -627,7 +630,7 @@ func TestReconcileExternalCertRoleBinding(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      utils.SpireOIDCExternalCertRoleBindingName,
 							Namespace: utils.GetOperatorNamespace(),
-							Labels:    map[string]string{"old-label": "old-value"},
+							Labels:    map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 						},
 						Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: "old-sa", Namespace: "old-ns"}},
 						RoleRef:  rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "old-role"},
@@ -662,7 +665,7 @@ func TestReconcileExternalCertRoleBinding(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      utils.SpireOIDCExternalCertRoleBindingName,
 							Namespace: utils.GetOperatorNamespace(),
-							Labels:    map[string]string{"old-label": "old-value"},
+							Labels:    map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 							OwnerReferences: []metav1.OwnerReference{
 								{
 									APIVersion: "ztwim.openshift.io/v1alpha1",
@@ -813,7 +816,7 @@ func TestReconcileExternalCertRoleBinding(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      utils.SpireOIDCExternalCertRoleBindingName,
 						Namespace: utils.GetOperatorNamespace(),
-						Labels:    map[string]string{"old-label": "old-value"},
+						Labels:    map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 					Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: "old-sa", Namespace: "old-ns"}},
 					RoleRef:  rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "old-role"},

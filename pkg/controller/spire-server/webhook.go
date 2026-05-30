@@ -46,6 +46,9 @@ func (r *SpireServerReconciler) reconcileWebhook(ctx context.Context, server *v1
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, ValidatingWebhookAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create validating webhook")
 			statusMgr.AddCondition(ValidatingWebhookAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create ValidatingWebhookConfiguration: %v", err),

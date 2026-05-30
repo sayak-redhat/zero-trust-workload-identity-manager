@@ -46,6 +46,9 @@ func (r *SpiffeCsiReconciler) reconcileCSIDriver(ctx context.Context, driver *v1
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, CSIDriverAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create CSI driver")
 			statusMgr.AddCondition(CSIDriverAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create CSIDriver: %v", err),

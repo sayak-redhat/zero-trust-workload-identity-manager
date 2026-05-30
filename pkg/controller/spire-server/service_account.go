@@ -46,6 +46,9 @@ func (r *SpireServerReconciler) reconcileServiceAccount(ctx context.Context, ser
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, ServiceAccountAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create service account")
 			statusMgr.AddCondition(ServiceAccountAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create ServiceAccount: %v", err),

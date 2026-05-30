@@ -83,6 +83,11 @@ const (
 	WorkloadAttestorVerificationTypeAuto     = "auto"
 	WorkloadAttestorVerificationTypeHostCert = "hostCert"
 
+	// ConfigMap Data Keys
+	SpireAgentConfigKey             = "agent.conf"
+	SpireServerConfigKey            = "server.conf"
+	SpireControllerManagerConfigKey = "controller-manager-config.yaml"
+
 	// Default Kubelet CA Paths (for OpenShift clusters)
 	// These are used as defaults for 'auto' mode when no explicit paths are provided.
 	DefaultKubeletCABasePath = "/etc/kubernetes"

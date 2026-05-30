@@ -164,6 +164,7 @@ func TestReconcileServiceAccount(t *testing.T) {
 						Name:            "spire-agent",
 						Namespace:       utils.GetOperatorNamespace(),
 						ResourceVersion: "123",
+						Labels: map[string]string{utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 				}
 				fc.GetStub = func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
@@ -207,7 +208,7 @@ func TestReconcileServiceAccount(t *testing.T) {
 						Name:            "spire-agent",
 						Namespace:       utils.GetOperatorNamespace(),
 						ResourceVersion: "123",
-						Labels:          map[string]string{"old-label": "old-value"},
+						Labels:          map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 				}
 				fc.GetStub = func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
@@ -236,7 +237,7 @@ func TestReconcileServiceAccount(t *testing.T) {
 						Name:            "spire-agent",
 						Namespace:       utils.GetOperatorNamespace(),
 						ResourceVersion: "123",
-						Labels:          map[string]string{"old-label": "old-value"},
+						Labels:          map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 				}
 				fc.GetStub = func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
@@ -249,6 +250,19 @@ func TestReconcileServiceAccount(t *testing.T) {
 			},
 			expectError:  true,
 			expectUpdate: true,
+		},
+		{
+			name: "resource conflict - create returns AlreadyExists",
+			agent: &v1alpha1.SpireAgent{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster", UID: "test-uid"},
+			},
+			setupClient: func(fc *fakes.FakeCustomCtrlClient) {
+				fc.GetReturns(kerrors.NewNotFound(schema.GroupResource{}, "spire-agent"))
+				fc.CreateReturns(kerrors.NewAlreadyExists(schema.GroupResource{Resource: "serviceaccounts"}, "spire-agent"))
+			},
+			expectError:  true,
+			expectCreate: true,
+			expectUpdate: false,
 		},
 		{
 			name: "set controller ref error",
@@ -293,7 +307,7 @@ func TestReconcileServiceAccount(t *testing.T) {
 			if tt.expectUpdate && fakeClient.UpdateCallCount() != 1 {
 				t.Errorf("Expected Update to be called once, called %d times", fakeClient.UpdateCallCount())
 			}
-			if !tt.expectUpdate && !tt.expectError && fakeClient.UpdateCallCount() != 0 {
+			if !tt.expectUpdate && fakeClient.UpdateCallCount() != 0 {
 				t.Error("Expected Update not to be called")
 			}
 		})

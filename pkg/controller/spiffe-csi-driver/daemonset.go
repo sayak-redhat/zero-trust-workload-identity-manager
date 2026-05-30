@@ -35,6 +35,9 @@ func (r *SpiffeCsiReconciler) reconcileDaemonSet(ctx context.Context, driver *v1
 	err := r.ctrlClient.Get(ctx, types.NamespacedName{Name: spiffeCsiDaemonset.Name, Namespace: spiffeCsiDaemonset.Namespace}, &existingSpiffeCsiDaemonSet)
 	if err != nil && kerrors.IsNotFound(err) {
 		if err = r.ctrlClient.Create(ctx, spiffeCsiDaemonset); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, spiffeCsiDaemonset, r.log, statusMgr, DaemonSetAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "Failed to create SpiffeCsiDaemon set")
 			statusMgr.AddCondition(DaemonSetAvailable, "SpiffeCSIDaemonSetCreationFailed",
 				err.Error(),
@@ -42,7 +45,11 @@ func (r *SpiffeCsiReconciler) reconcileDaemonSet(ctx context.Context, driver *v1
 			return fmt.Errorf("failed to create DaemonSet: %w", err)
 		}
 		r.log.Info("Created spiffe csi DaemonSet")
-	} else if err == nil && needsUpdate(existingSpiffeCsiDaemonSet, *spiffeCsiDaemonset) {
+	} else if err == nil {
+		if !needsUpdate(existingSpiffeCsiDaemonSet, *spiffeCsiDaemonset) {
+			statusMgr.CheckDaemonSetHealth(ctx, spiffeCsiDaemonset.Name, spiffeCsiDaemonset.Namespace, DaemonSetAvailable)
+			return nil
+		}
 		if createOnlyMode {
 			r.log.Info("Skipping DaemonSet update due to create-only mode")
 		} else {
@@ -56,7 +63,7 @@ func (r *SpiffeCsiReconciler) reconcileDaemonSet(ctx context.Context, driver *v1
 			}
 			r.log.Info("Updated spiffe csi DaemonSet")
 		}
-	} else if err != nil {
+	} else {
 		r.log.Error(err, "Failed to get SpiffeCsiDaemon set")
 		statusMgr.AddCondition(DaemonSetAvailable, "SpiffeCSIDaemonSetGetFailed",
 			err.Error(),

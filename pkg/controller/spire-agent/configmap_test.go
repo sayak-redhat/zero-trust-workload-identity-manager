@@ -461,13 +461,13 @@ func TestGenerateSpireAgentConfigMap(t *testing.T) {
 			assert.Equal(t, expectedAnnotations, cm.Annotations)
 
 			// Validate ConfigMap data
-			assert.Contains(t, cm.Data, "agent.conf")
-			assert.NotEmpty(t, cm.Data["agent.conf"])
+			assert.Contains(t, cm.Data, utils.SpireAgentConfigKey)
+			assert.NotEmpty(t, cm.Data[utils.SpireAgentConfigKey])
 
 			if tt.validateConfigData {
 				// Validate that the config data is valid JSON
 				var configData map[string]interface{}
-				err := json.Unmarshal([]byte(cm.Data["agent.conf"]), &configData)
+				err := json.Unmarshal([]byte(cm.Data[utils.SpireAgentConfigKey]), &configData)
 				require.NoError(t, err)
 
 				// Validate basic structure
@@ -496,7 +496,7 @@ func TestGenerateSpireAgentConfigMap(t *testing.T) {
 				cm2, hash2, err2 := generateSpireAgentConfigMap(tt.spireAgentConfig, tt.ztwim)
 				require.NoError(t, err2)
 				assert.Equal(t, hash, hash2)
-				assert.Equal(t, cm.Data["agent.conf"], cm2.Data["agent.conf"])
+				assert.Equal(t, cm.Data[utils.SpireAgentConfigKey], cm2.Data[utils.SpireAgentConfigKey])
 			}
 		})
 	}
@@ -541,8 +541,8 @@ func TestGenerateSpireAgentConfigMapConsistency(t *testing.T) {
 	// All results should be identical
 	assert.Equal(t, hash1, hash2)
 	assert.Equal(t, hash2, hash3)
-	assert.Equal(t, cm1.Data["agent.conf"], cm2.Data["agent.conf"])
-	assert.Equal(t, cm2.Data["agent.conf"], cm3.Data["agent.conf"])
+	assert.Equal(t, cm1.Data[utils.SpireAgentConfigKey], cm2.Data[utils.SpireAgentConfigKey])
+	assert.Equal(t, cm2.Data[utils.SpireAgentConfigKey], cm3.Data[utils.SpireAgentConfigKey])
 }
 
 func TestGenerateAgentConfigNilChecks(t *testing.T) {

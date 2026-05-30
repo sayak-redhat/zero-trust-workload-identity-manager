@@ -399,6 +399,7 @@ func TestReconcileDeployment(t *testing.T) {
 				Name:            "spire-spiffe-oidc-discovery-provider",
 				Namespace:       utils.GetOperatorNamespace(),
 				ResourceVersion: "123",
+						Labels: map[string]string{utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 			},
 			Spec: appsv1.DeploymentSpec{
 				Replicas: &replicas,
@@ -437,6 +438,7 @@ func TestReconcileDeployment(t *testing.T) {
 				Name:            "spire-spiffe-oidc-discovery-provider",
 				Namespace:       utils.GetOperatorNamespace(),
 				ResourceVersion: "123",
+						Labels: map[string]string{utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 			},
 			Spec: appsv1.DeploymentSpec{
 				Replicas: &replicas,
@@ -472,6 +474,7 @@ func TestReconcileDeployment(t *testing.T) {
 				Name:            "spire-spiffe-oidc-discovery-provider",
 				Namespace:       utils.GetOperatorNamespace(),
 				ResourceVersion: "123",
+						Labels: map[string]string{utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 			},
 			Spec: appsv1.DeploymentSpec{
 				Replicas: &replicas,

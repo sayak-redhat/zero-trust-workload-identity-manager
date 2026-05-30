@@ -58,6 +58,9 @@ func (r *SpireAgentReconciler) reconcileAgentService(ctx context.Context, agent 
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, ServiceAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create service")
 			statusMgr.AddCondition(ServiceAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create Service: %v", err),
@@ -69,7 +72,6 @@ func (r *SpireAgentReconciler) reconcileAgentService(ctx context.Context, agent 
 		return nil
 	}
 
-	// Resource exists, check if we need to update
 	if createOnlyMode {
 		r.log.V(1).Info("Service exists, skipping update due to create-only mode", "name", desired.Name)
 		return nil

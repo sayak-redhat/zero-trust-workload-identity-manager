@@ -39,6 +39,9 @@ func (r *SpireOidcDiscoveryProviderReconciler) reconcileRoute(ctx context.Contex
 		if err != nil {
 			if kerrors.IsNotFound(err) {
 				if err = r.ctrlClient.Create(ctx, route); err != nil {
+					if conflictErr := utils.HandleCreateConflict(err, route, r.log, statusMgr, RouteAvailable); conflictErr != nil {
+						return conflictErr
+					}
 					r.log.Error(err, "Failed to create route")
 					statusMgr.AddCondition(RouteAvailable, "ManagedRouteCreationFailed",
 						err.Error(),

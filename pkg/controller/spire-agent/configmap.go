@@ -42,6 +42,9 @@ func (r *SpireAgentReconciler) reconcileConfigMap(ctx context.Context, agent *v1
 	err = r.ctrlClient.Get(ctx, types.NamespacedName{Name: spireAgentConfigMap.Name, Namespace: spireAgentConfigMap.Namespace}, &existingSpireAgentCM)
 	if err != nil && kerrors.IsNotFound(err) {
 		if err = r.ctrlClient.Create(ctx, spireAgentConfigMap); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, spireAgentConfigMap, r.log, statusMgr, ConfigMapAvailable); conflictErr != nil {
+				return "", conflictErr
+			}
 			r.log.Error(err, "failed to create spire-agent config map")
 			statusMgr.AddCondition(ConfigMapAvailable, "SpireAgentConfigMapGenerationFailed",
 				err.Error(),
@@ -49,22 +52,24 @@ func (r *SpireAgentReconciler) reconcileConfigMap(ctx context.Context, agent *v1
 			return "", fmt.Errorf("failed to create ConfigMap: %w", err)
 		}
 		r.log.Info("Created spire agent ConfigMap")
-	} else if err == nil && (existingSpireAgentCM.Data["agent.conf"] != spireAgentConfigMap.Data["agent.conf"] ||
-		!equality.Semantic.DeepEqual(existingSpireAgentCM.Labels, spireAgentConfigMap.Labels)) {
-		if createOnlyMode {
-			r.log.Info("Skipping ConfigMap update due to create-only mode")
-		} else {
-			spireAgentConfigMap.ResourceVersion = existingSpireAgentCM.ResourceVersion
-			if err = r.ctrlClient.Update(ctx, spireAgentConfigMap); err != nil {
-				r.log.Error(err, "failed to update spire-agent config map")
-				statusMgr.AddCondition(ConfigMapAvailable, "SpireAgentConfigMapGenerationFailed",
-					err.Error(),
-					metav1.ConditionFalse)
-				return "", fmt.Errorf("failed to update ConfigMap: %w", err)
+	} else if err == nil {
+		if existingSpireAgentCM.Data[utils.SpireAgentConfigKey] != spireAgentConfigMap.Data[utils.SpireAgentConfigKey] ||
+			!equality.Semantic.DeepEqual(existingSpireAgentCM.Labels, spireAgentConfigMap.Labels) {
+			if createOnlyMode {
+				r.log.Info("Skipping ConfigMap update due to create-only mode")
+			} else {
+				spireAgentConfigMap.ResourceVersion = existingSpireAgentCM.ResourceVersion
+				if err = r.ctrlClient.Update(ctx, spireAgentConfigMap); err != nil {
+					r.log.Error(err, "failed to update spire-agent config map")
+					statusMgr.AddCondition(ConfigMapAvailable, "SpireAgentConfigMapGenerationFailed",
+						err.Error(),
+						metav1.ConditionFalse)
+					return "", fmt.Errorf("failed to update ConfigMap: %w", err)
+				}
+				r.log.Info("Updated ConfigMap with new config")
 			}
-			r.log.Info("Updated ConfigMap with new config")
 		}
-	} else if err != nil {
+	} else {
 		statusMgr.AddCondition(ConfigMapAvailable, "SpireAgentConfigMapGenerationFailed",
 			err.Error(),
 			metav1.ConditionFalse)
@@ -208,7 +213,7 @@ func generateSpireAgentConfigMap(spireAgentConfig *v1alpha1.SpireAgent, ztwim *v
 			},
 		},
 		Data: map[string]string{
-			"agent.conf": string(agentConfigJSON),
+			utils.SpireAgentConfigKey: string(agentConfigJSON),
 		},
 	}
 

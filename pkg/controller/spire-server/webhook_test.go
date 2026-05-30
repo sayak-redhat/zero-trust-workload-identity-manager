@@ -166,7 +166,7 @@ func TestReconcileWebhook(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:            "spire-controller-manager-webhook",
 						ResourceVersion: "123",
-						Labels:          map[string]string{"old-label": "old-value"},
+						Labels:          map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 				}
 				fc.GetStub = func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
@@ -195,7 +195,7 @@ func TestReconcileWebhook(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:            "spire-controller-manager-webhook",
 						ResourceVersion: "123",
-						Labels:          map[string]string{"old-label": "old-value"},
+						Labels:          map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 				}
 				fc.GetStub = func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
@@ -224,7 +224,7 @@ func TestReconcileWebhook(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name:            "spire-controller-manager-webhook",
 						ResourceVersion: "123",
-						Labels:          map[string]string{"old-label": "old-value"},
+						Labels:          map[string]string{"old-label": "old-value", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 				}
 				fc.GetStub = func(ctx context.Context, key client.ObjectKey, obj client.Object) error {

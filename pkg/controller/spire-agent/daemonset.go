@@ -34,6 +34,9 @@ func (r *SpireAgentReconciler) reconcileDaemonSet(ctx context.Context, agent *v1
 	err := r.ctrlClient.Get(ctx, types.NamespacedName{Name: spireAgentDaemonset.Name, Namespace: spireAgentDaemonset.Namespace}, &existingSpireAgentDaemonSet)
 	if err != nil && kerrors.IsNotFound(err) {
 		if err = r.ctrlClient.Create(ctx, spireAgentDaemonset); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, spireAgentDaemonset, r.log, statusMgr, DaemonSetAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create spire-agent daemonset")
 			statusMgr.AddCondition(DaemonSetAvailable, "SpireAgentDaemonSetCreationFailed",
 				err.Error(),
@@ -41,7 +44,11 @@ func (r *SpireAgentReconciler) reconcileDaemonSet(ctx context.Context, agent *v1
 			return fmt.Errorf("failed to create DaemonSet: %w", err)
 		}
 		r.log.Info("Created spire agent DaemonSet")
-	} else if err == nil && needsUpdate(existingSpireAgentDaemonSet, *spireAgentDaemonset) {
+	} else if err == nil {
+		if !needsUpdate(existingSpireAgentDaemonSet, *spireAgentDaemonset) {
+			statusMgr.CheckDaemonSetHealth(ctx, spireAgentDaemonset.Name, spireAgentDaemonset.Namespace, DaemonSetAvailable)
+			return nil
+		}
 		if createOnlyMode {
 			r.log.Info("Skipping DaemonSet update due to create-only mode")
 		} else {
@@ -55,7 +62,7 @@ func (r *SpireAgentReconciler) reconcileDaemonSet(ctx context.Context, agent *v1
 			}
 			r.log.Info("Updated spire agent DaemonSet")
 		}
-	} else if err != nil {
+	} else {
 		r.log.Error(err, "failed to get spire-agent daemonset")
 		statusMgr.AddCondition(DaemonSetAvailable, "SpireAgentDaemonSetGetFailed",
 			err.Error(),

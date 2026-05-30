@@ -470,7 +470,7 @@ func TestReconcileRoute(t *testing.T) {
 						Name:            "spire-server-federation",
 						Namespace:       utils.GetOperatorNamespace(),
 						ResourceVersion: "123",
-						Labels:          map[string]string{"old": "label"},
+						Labels:          map[string]string{"old": "label", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 					Spec: routev1.RouteSpec{Host: "old-host"},
 				}
@@ -498,7 +498,7 @@ func TestReconcileRoute(t *testing.T) {
 						Name:            "spire-server-federation",
 						Namespace:       utils.GetOperatorNamespace(),
 						ResourceVersion: "123",
-						Labels:          map[string]string{"old": "label"},
+						Labels:          map[string]string{"old": "label", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 					Spec: routev1.RouteSpec{Host: "old-host"},
 				}
@@ -526,7 +526,7 @@ func TestReconcileRoute(t *testing.T) {
 						Name:            "spire-server-federation",
 						Namespace:       utils.GetOperatorNamespace(),
 						ResourceVersion: "123",
-						Labels:          map[string]string{"old": "label"},
+						Labels:          map[string]string{"old": "label", utils.AppManagedByLabelKey: utils.AppManagedByLabelValue},
 					},
 					Spec: routev1.RouteSpec{Host: "old-host"},
 				}

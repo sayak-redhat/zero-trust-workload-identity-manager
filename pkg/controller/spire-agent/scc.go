@@ -90,6 +90,9 @@ func (r *SpireAgentReconciler) reconcileSCC(ctx context.Context, agent *v1alpha1
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, SecurityContextConstraintsAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "Failed to create SpireAgentSCC")
 			statusMgr.AddCondition(SecurityContextConstraintsAvailable, "SpireAgentSCCCreationFailed",
 				err.Error(),

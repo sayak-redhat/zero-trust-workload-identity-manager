@@ -71,6 +71,9 @@ func (r *SpireOidcDiscoveryProviderReconciler) reconcileExternalCertRole(ctx con
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create external cert role")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create external cert Role: %v", err),
@@ -136,6 +139,9 @@ func (r *SpireOidcDiscoveryProviderReconciler) reconcileExternalCertRoleBinding(
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create external cert role binding")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create external cert RoleBinding: %v", err),

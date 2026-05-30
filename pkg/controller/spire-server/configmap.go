@@ -74,27 +74,32 @@ func (r *SpireServerReconciler) reconcileSpireServerConfigMap(ctx context.Contex
 	err = r.ctrlClient.Get(ctx, types.NamespacedName{Name: spireServerConfigMap.Name, Namespace: spireServerConfigMap.Namespace}, &existingSpireServerCM)
 	if err != nil && kerrors.IsNotFound(err) {
 		if err = r.ctrlClient.Create(ctx, spireServerConfigMap); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, spireServerConfigMap, r.log, statusMgr, ServerConfigMapAvailable); conflictErr != nil {
+				return "", conflictErr
+			}
 			statusMgr.AddCondition(ServerConfigMapAvailable, "SpireServerConfigMapGenerationFailed",
 				err.Error(),
 				metav1.ConditionFalse)
 			return "", fmt.Errorf("failed to create ConfigMap: %w", err)
 		}
 		r.log.Info("Created spire server ConfigMap")
-	} else if err == nil && (existingSpireServerCM.Data["server.conf"] != spireServerConfigMap.Data["server.conf"] ||
-		!equality.Semantic.DeepEqual(existingSpireServerCM.Labels, spireServerConfigMap.Labels)) {
-		if createOnlyMode {
-			r.log.Info("Skipping ConfigMap update due to create-only mode")
-		} else {
-			spireServerConfigMap.ResourceVersion = existingSpireServerCM.ResourceVersion
-			if err = r.ctrlClient.Update(ctx, spireServerConfigMap); err != nil {
-				statusMgr.AddCondition(ServerConfigMapAvailable, "SpireServerConfigMapGenerationFailed",
-					err.Error(),
-					metav1.ConditionFalse)
-				return "", fmt.Errorf("failed to update ConfigMap: %w", err)
+	} else if err == nil {
+		if existingSpireServerCM.Data[utils.SpireServerConfigKey] != spireServerConfigMap.Data[utils.SpireServerConfigKey] ||
+			!equality.Semantic.DeepEqual(existingSpireServerCM.Labels, spireServerConfigMap.Labels) {
+			if createOnlyMode {
+				r.log.Info("Skipping ConfigMap update due to create-only mode")
+			} else {
+				spireServerConfigMap.ResourceVersion = existingSpireServerCM.ResourceVersion
+				if err = r.ctrlClient.Update(ctx, spireServerConfigMap); err != nil {
+					statusMgr.AddCondition(ServerConfigMapAvailable, "SpireServerConfigMapGenerationFailed",
+						err.Error(),
+						metav1.ConditionFalse)
+					return "", fmt.Errorf("failed to update ConfigMap: %w", err)
+				}
+				r.log.Info("Updated ConfigMap with new config")
 			}
-			r.log.Info("Updated ConfigMap with new config")
 		}
-	} else if err != nil {
+	} else {
 		statusMgr.AddCondition(ServerConfigMapAvailable, "SpireServerConfigMapGenerationFailed",
 			err.Error(),
 			metav1.ConditionFalse)
@@ -139,6 +144,9 @@ func (r *SpireServerReconciler) reconcileSpireControllerManagerConfigMap(ctx con
 	err = r.ctrlClient.Get(ctx, types.NamespacedName{Name: spireControllerManagerConfigMap.Name, Namespace: spireControllerManagerConfigMap.Namespace}, &existingSpireControllerManagerCM)
 	if err != nil && kerrors.IsNotFound(err) {
 		if err = r.ctrlClient.Create(ctx, spireControllerManagerConfigMap); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, spireControllerManagerConfigMap, r.log, statusMgr, ControllerManagerConfigAvailable); conflictErr != nil {
+				return "", conflictErr
+			}
 			r.log.Error(err, "failed to create spire controller manager config map")
 			statusMgr.AddCondition(ControllerManagerConfigAvailable, "SpireControllerManagerConfigMapGenerationFailed",
 				err.Error(),
@@ -146,22 +154,27 @@ func (r *SpireServerReconciler) reconcileSpireControllerManagerConfigMap(ctx con
 			return "", fmt.Errorf("failed to create ConfigMap: %w", err)
 		}
 		r.log.Info("Created spire controller manager ConfigMap")
-	} else if err == nil && (existingSpireControllerManagerCM.Data["controller-manager-config.yaml"] != spireControllerManagerConfigMap.Data["controller-manager-config.yaml"] ||
-		!equality.Semantic.DeepEqual(existingSpireControllerManagerCM.Labels, spireControllerManagerConfigMap.Labels)) {
-		if createOnlyMode {
-			r.log.Info("Skipping spire controller manager ConfigMap update due to create-only mode")
-		} else {
-			spireControllerManagerConfigMap.ResourceVersion = existingSpireControllerManagerCM.ResourceVersion
-			if err = r.ctrlClient.Update(ctx, spireControllerManagerConfigMap); err != nil {
-				statusMgr.AddCondition(ControllerManagerConfigAvailable, "SpireControllerManagerConfigMapGenerationFailed",
-					err.Error(),
-					metav1.ConditionFalse)
-				return "", fmt.Errorf("failed to update ConfigMap: %w", err)
+	} else if err == nil {
+		if existingSpireControllerManagerCM.Data[utils.SpireControllerManagerConfigKey] != spireControllerManagerConfigMap.Data[utils.SpireControllerManagerConfigKey] ||
+			!equality.Semantic.DeepEqual(existingSpireControllerManagerCM.Labels, spireControllerManagerConfigMap.Labels) {
+			if createOnlyMode {
+				r.log.Info("Skipping spire controller manager ConfigMap update due to create-only mode")
+			} else {
+				spireControllerManagerConfigMap.ResourceVersion = existingSpireControllerManagerCM.ResourceVersion
+				if err = r.ctrlClient.Update(ctx, spireControllerManagerConfigMap); err != nil {
+					statusMgr.AddCondition(ControllerManagerConfigAvailable, "SpireControllerManagerConfigMapGenerationFailed",
+						err.Error(),
+						metav1.ConditionFalse)
+					return "", fmt.Errorf("failed to update ConfigMap: %w", err)
+				}
+				r.log.Info("Updated ConfigMap with new config")
 			}
 		}
-		r.log.Info("Updated ConfigMap with new config")
-	} else if err != nil {
-		r.log.Error(err, "failed to update spire controller manager config map")
+	} else {
+		r.log.Error(err, "failed to get spire controller manager config map")
+		statusMgr.AddCondition(ControllerManagerConfigAvailable, "SpireControllerManagerConfigMapGetFailed",
+			err.Error(),
+			metav1.ConditionFalse)
 		return "", err
 	}
 
@@ -230,7 +243,7 @@ func generateSpireServerConfigMap(config *v1alpha1.SpireServerSpec, ztwim *v1alp
 			Labels:    utils.SpireServerLabels(config.Labels),
 		},
 		Data: map[string]string{
-			"server.conf": string(confJSON),
+			utils.SpireServerConfigKey: string(confJSON),
 		},
 	}
 
@@ -640,7 +653,7 @@ func generateControllerManagerConfigMap(configYAML string) *corev1.ConfigMap {
 			Labels:    utils.SpireControllerManagerLabels(nil),
 		},
 		Data: map[string]string{
-			"controller-manager-config.yaml": configYAML,
+			utils.SpireControllerManagerConfigKey: configYAML,
 		},
 	}
 }

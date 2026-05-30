@@ -103,6 +103,9 @@ func (r *SpireServerReconciler) reconcileClusterRole(ctx context.Context, server
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create cluster role")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create ClusterRole: %v", err),
@@ -168,6 +171,9 @@ func (r *SpireServerReconciler) reconcileClusterRoleBinding(ctx context.Context,
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create cluster role binding")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create ClusterRoleBinding: %v", err),
@@ -233,6 +239,9 @@ func (r *SpireServerReconciler) reconcileSpireBundleRole(ctx context.Context, se
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create spire-bundle role")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create Bundle Role: %v", err),
@@ -298,6 +307,9 @@ func (r *SpireServerReconciler) reconcileSpireBundleRoleBinding(ctx context.Cont
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create spire-bundle role binding")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create Bundle RoleBinding: %v", err),
@@ -363,6 +375,9 @@ func (r *SpireServerReconciler) reconcileControllerManagerClusterRole(ctx contex
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create controller manager cluster role")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create Controller Manager ClusterRole: %v", err),
@@ -428,6 +443,9 @@ func (r *SpireServerReconciler) reconcileControllerManagerClusterRoleBinding(ctx
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create controller manager cluster role binding")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create Controller Manager ClusterRoleBinding: %v", err),
@@ -493,6 +511,9 @@ func (r *SpireServerReconciler) reconcileLeaderElectionRole(ctx context.Context,
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create leader election role")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create Leader Election Role: %v", err),
@@ -558,6 +579,9 @@ func (r *SpireServerReconciler) reconcileLeaderElectionRoleBinding(ctx context.C
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create leader election role binding")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create Leader Election RoleBinding: %v", err),
@@ -717,6 +741,9 @@ func (r *SpireServerReconciler) reconcileExternalCertRole(ctx context.Context, s
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create external cert role")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create external cert Role: %v", err),
@@ -782,6 +809,9 @@ func (r *SpireServerReconciler) reconcileExternalCertRoleBinding(ctx context.Con
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, RBACAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create external cert role binding")
 			statusMgr.AddCondition(RBACAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create external cert RoleBinding: %v", err),

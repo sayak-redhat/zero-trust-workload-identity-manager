@@ -64,6 +64,9 @@ func (r *SpireServerReconciler) reconcileSpireServerService(ctx context.Context,
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, ServiceAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create service")
 			statusMgr.AddCondition(ServiceAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create Service: %v", err),
@@ -147,6 +150,9 @@ func (r *SpireServerReconciler) reconcileSpireControllerManagerService(ctx conte
 
 		// Resource doesn't exist, create it
 		if err := r.ctrlClient.Create(ctx, desired); err != nil {
+			if conflictErr := utils.HandleCreateConflict(err, desired, r.log, statusMgr, ServiceAvailable); conflictErr != nil {
+				return conflictErr
+			}
 			r.log.Error(err, "failed to create controller manager service")
 			statusMgr.AddCondition(ServiceAvailable, v1alpha1.ReasonFailed,
 				fmt.Sprintf("Failed to create Controller Manager Service: %v", err),
