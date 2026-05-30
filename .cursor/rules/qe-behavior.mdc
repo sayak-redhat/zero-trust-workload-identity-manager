@@ -5,83 +5,99 @@ alwaysApply: true
 
 # QE Behavioral Guidelines
 
-Behavioral guidelines to reduce common LLM mistakes in QE workflows. Apply to all tasks: test writing, code review, test plan generation, and debugging.
+Apply these rules to **all** QE tasks: test writing, code review, test plan generation, and debugging. They bias toward precision and traceability over speed.
 
-**Tradeoff:** These guidelines bias toward precision and traceability over speed. For trivial tasks, use judgment.
+---
 
 ## 1. Ask Before Assuming
 
-**Don't invent requirements. Surface confusion early.**
+**DO** surface confusion early. **DON'T** invent requirements.
 
-- If the ADR or PR diff is ambiguous, ask — don't fabricate requirements.
-- If multiple test approaches exist, present options — don't pick silently.
-- If scope is unclear, state your interpretation and confirm before proceeding.
-- If something contradicts the ADR, stop and flag the conflict.
-- In PR Mode, if design intent is unclear from code alone, flag it as a gap.
+| Situation | Action |
+| --- | --- |
+| ADR or PR diff is ambiguous | Ask — don't fabricate requirements |
+| Multiple test approaches exist | Present options — don't pick silently |
+| Scope is unclear | State your interpretation, confirm before proceeding |
+| Something contradicts the ADR | Stop and flag the conflict |
+| PR Mode: design intent unclear from code | Flag it as a gap in the test plan |
+
+---
 
 ## 2. Precision Over Volume
 
-**One test per observable behavior. No padding.**
+**DO** write one test per observable behavior. **DON'T** pad with redundant tests.
 
-- Every test step must name a specific action AND a specific observable outcome.
-- Never use vague verbs ("verify", "ensure", "check") without a named observable (e.g. condition `Ready=True`, HTTP 200, specific field value).
-- Don't generate redundant tests that cover the same observable in multiple tiers.
-- If you write 10 tests and 5 cover the same behavior, consolidate to 5.
+- Every test step must name a **specific action** AND a **specific observable outcome**.
+- Never use vague verbs ("verify", "ensure", "check") without a named observable.
+- If multiple tests cover the same observable, consolidate them.
 
-Ask yourself: "Would a senior QE engineer say these are redundant?" If yes, deduplicate.
+| BAD | GOOD |
+| --- | --- |
+| "Verify the operator works correctly" | "Assert `Ready=True` on SpireServer CR within 60s" |
+| "Check security" | "Exec into spire-server pod; confirm process runs as UID 1000 (non-root)" |
+| "Ensure cleanup happens" | "Delete SpireServer CR; assert finalizer removes spire-agent DaemonSet within 30s" |
+
+**Litmus test:** Would a senior QE engineer call these redundant? If yes, deduplicate.
+
+---
 
 ## 3. Surgical Scope
 
-**Test only what the change covers. Nothing speculative.**
+**DO** test only what the change covers. **DON'T** test anything speculative.
 
-- Only test what the ADR's scope covers (or what the PR diff changes in PR Mode).
-- Respect Non-Goals — don't generate tests for excluded behavior unless guarding against regression.
-- Match existing test style (Ginkgo v2, Eventually/Consistently patterns, DeferCleanup).
+- Only test what the ADR's scope covers (or what the PR diff changes).
+- Respect Non-Goals — no tests for excluded behavior unless guarding regression.
+- Match existing test style: Ginkgo v2, `Eventually`/`Consistently`, `DeferCleanup`.
 - Don't refactor existing tests unless asked.
 
-The test: Every test case should trace directly to the ADR's stated goals/risks or the PR's changed behaviors.
+**Validation:** Every test case must trace directly to the ADR's stated goals/risks or the PR's changed behaviors.
 
-## 3a. Operator Deployment Context (OLM-Managed)
+---
 
-**The ZTWIM operator is installed and managed via OLM (Operator Lifecycle Manager). Never assume direct deployment control.**
+## 4. OLM Deployment Context
 
-- The operator is deployed via a **ClusterServiceVersion (CSV)**, not a standalone Deployment.
-- **Never use `oc scale deployment`** to change replica count — OLM will immediately revert it. Use CSV patch instead:
-  ```
-  oc patch csv <csv-name> -n zero-trust-workload-identity-manager \
-    --type=json -p '[{"op":"replace","path":"/spec/install/spec/deployments/0/spec/replicas","value":N}]'
-  ```
-- **Never use `oc edit deployment`** to change container args/env — patch the CSV or Subscription instead.
-- To add environment variables (e.g., `CREATE_ONLY_MODE`), patch the **Subscription**:
-  ```
-  oc patch subscription openshift-zero-trust-workload-identity-manager \
-    -n zero-trust-workload-identity-manager --type='merge' \
-    -p '{"spec":{"config":{"env":[{"name":"ENV_VAR","value":"value"}]}}}'
-  ```
-- Operator namespace: `zero-trust-workload-identity-manager`
-- CSV name pattern: `zero-trust-workload-identity-manager.v<VERSION>`
-- Operand CRs: SpireServer, SpireAgent, SpiffeCSIDriver, SpireOIDCDiscoveryProvider, ZeroTrustWorkloadIdentityManager
-- All operands use the name `cluster` (e.g., `oc get spireagent cluster`)
-- When writing test steps involving scaling, env changes, or operator config, always use the OLM-appropriate method (CSV/Subscription patch), not direct deployment manipulation.
+The operator is managed by OLM. **Never assume direct deployment control.**
 
-## 4. Traceability Always
+### Quick reference
 
-**Every test traces back to a source. No orphan tests.**
+| Property | Value |
+| --- | --- |
+| Namespace | `zero-trust-workload-identity-manager` |
+| CSV name pattern | `zero-trust-workload-identity-manager.v<VERSION>` |
+| Operand CRs | SpireServer, SpireAgent, SpiffeCSIDriver, SpireOIDCDiscoveryProvider, ZeroTrustWorkloadIdentityManager |
+| Operand CR name | Always `cluster` (e.g. `oc get spireagent cluster`) |
 
-- In ADR Mode: every test traces to an ADR section or Jira acceptance criteria.
-- In PR Mode: every test traces to a specific diff location (`file.go:L42`) or PR description.
+### DO / DON'T
+
+| DON'T | DO instead |
+| --- | --- |
+| `oc scale deployment` (OLM reverts it) | Patch the CSV: `oc patch csv <name> -n zero-trust-workload-identity-manager --type=json -p '[{"op":"replace","path":"/spec/install/spec/deployments/0/spec/replicas","value":N}]'` |
+| `oc edit deployment` for args/env | Patch the Subscription: `oc patch subscription openshift-zero-trust-workload-identity-manager -n zero-trust-workload-identity-manager --type='merge' -p '{"spec":{"config":{"env":[{"name":"VAR","value":"val"}]}}}'` |
+
+---
+
+## 5. Traceability
+
+**DO** trace every test to a source. **DON'T** create orphan tests.
+
+| Mode | Trace to |
+| --- | --- |
+| ADR Mode | ADR section or Jira acceptance criteria |
+| PR Mode | Specific diff location (`file.go:L42`) or PR description |
+
 - Never trace to commits or unrelated PRs.
-- Every requirement traces to at least one test or has an explicit "NOT COVERED" with justification.
-- Use stable IDs (REQ-001, PR-REQ-001, UT-001, E2E-001) that remain consistent across revisions.
+- Every requirement maps to at least one test — or has an explicit "NOT COVERED" with justification.
+- Use stable IDs (`REQ-001`, `PR-REQ-001`, `UT-001`, `E2E-001`) consistent across revisions.
 
-## 5. Self-Verify Before Outputting
+---
 
-**Define success criteria. Loop until they pass.**
+## 6. Self-Verify Before Outputting
 
-- Run quality gates before returning any test plan.
-- If a gate fails, fix and re-verify — don't output a failing plan.
+**DO** run quality gates before returning any output. **DON'T** output a failing plan.
+
+- If a gate fails, fix and re-verify — don't ship it.
 - Count coverage by tier and priority before finishing.
-- For multi-step tasks, state a brief plan with verification checkpoints:
+- For multi-step tasks, state a brief plan with checkpoints:
 
 ```
 1. [Step] → verify: [check]
@@ -89,27 +105,18 @@ The test: Every test case should trace directly to the ADR's stated goals/risks 
 3. [Step] → verify: [check]
 ```
 
+---
+
 ## Stop Conditions (non-negotiable)
 
-- No ADR and no PR provided → STOP, ask for ADR or PR link
-- ADR has no "How" section → WARN user, generate with reduced Tier 1/2 coverage
-- Jira conflicts with ADR → Document conflict, follow ADR, ask user to resolve
-- More than 3 ambiguous requirements → STOP, list ambiguities, ask for clarification
-- PR-only mode: more than 3 low-confidence requirements → WARN user, recommend ADR review
-
-## Good vs Bad Examples
-
-```
-BAD step:  "Verify the operator works correctly"
-GOOD step: "Assert status condition Ready=True on SpireServer CR within 60s"
-
-BAD step:  "Check security"
-GOOD step: "Exec into spire-server pod; confirm process runs as UID 1000 (non-root)"
-
-BAD step:  "Ensure cleanup happens"
-GOOD step: "Delete SpireServer CR; assert finalizer removes spire-agent DaemonSet within 30s"
-```
+| Condition | Action |
+| --- | --- |
+| No ADR and no PR provided | **STOP** — ask for ADR or PR link |
+| ADR has no "How" section | **WARN** — generate with reduced Tier 1/2 coverage |
+| Jira conflicts with ADR | **Document** conflict, follow ADR, ask user to resolve |
+| More than 3 ambiguous requirements | **STOP** — list ambiguities, ask for clarification |
+| PR-only: more than 3 low-confidence requirements | **WARN** — recommend ADR review |
 
 ---
 
-**These guidelines are working if:** test plans have zero vague steps, every test traces to a requirement, no redundant tests exist across tiers, and clarifying questions come before generation rather than after mistakes.
+**These guidelines are working if:** test plans have zero vague steps, every test traces to a requirement, no redundant tests exist across tiers, and clarifying questions come before generation — not after mistakes.
