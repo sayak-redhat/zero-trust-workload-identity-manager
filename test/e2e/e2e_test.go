@@ -590,6 +590,90 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 			fmt.Fprintf(GinkgoWriter, "rotated SVID serial: %s\n", rotatedCert.SerialNumber.String())
 		})
 
+		It("should issue a fresh SVID after pod deletion and re-creation", Label("attestation"), func() {
+			By("Setting up attestation environment")
+			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "pod-recreate", nil)
+
+			By("Recording initial SVID serial number")
+			_, _, _, initialCert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, f.PodName, f.AppContainer)
+			Expect(err).NotTo(HaveOccurred(), "failed to read initial svid.pem")
+			initialSerial := initialCert.SerialNumber.String()
+			fmt.Fprintf(GinkgoWriter, "initial SVID serial: %s\n", initialSerial)
+
+			By("Deleting the attestation pod")
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: f.PodName, Namespace: f.Namespace}}
+			Expect(k8sClient.Delete(testCtx, pod)).To(Succeed(), "failed to delete attestation pod")
+
+			By("Waiting for pod to be fully removed")
+			Eventually(func() bool {
+				err := k8sClient.Get(testCtx, types.NamespacedName{Name: f.PodName, Namespace: f.Namespace}, &corev1.Pod{})
+				return err != nil
+			}).WithTimeout(2 * time.Minute).WithPolling(5 * time.Second).Should(BeTrue(),
+				"old pod %s/%s should be fully removed", f.Namespace, f.PodName)
+
+			By("Creating a new pod with the same configuration")
+			newPodName := f.PodName + "-new"
+			readOnlyTrue := true
+			newPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: newPodName, Namespace: f.Namespace,
+					Labels: map[string]string{"app": "pod-recreate"},
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: f.SAName,
+					Containers: []corev1.Container{
+						{
+							Name: utils.SpiffeHelperContainerName, Image: utils.SpiffeHelperImage,
+							Args: []string{"-config", "/run/spiffe-helper/helper.conf"},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "spiffe-workload-api", MountPath: "/spiffe-workload-api", ReadOnly: true},
+								{Name: "certs", MountPath: "/certs"},
+								{Name: "spiffe-helper-config", MountPath: "/run/spiffe-helper", ReadOnly: true},
+							},
+						},
+						{
+							Name: f.AppContainer, Image: "busybox",
+							Command: []string{"sleep", "3600"},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "certs", MountPath: "/certs"},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{Name: "spiffe-workload-api", VolumeSource: corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{Driver: "csi.spiffe.io", ReadOnly: &readOnlyTrue}}},
+						{Name: "certs", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{Name: "spiffe-helper-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: utils.SpiffeHelperConfigMapName}}}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(testCtx, newPod)).To(Succeed(), "failed to create new attestation pod")
+
+			By("Waiting for new pod to become ready")
+			utils.WaitForPodReady(testCtx, clientset, newPodName, f.Namespace, 3*utils.ShortTimeout)
+
+			By("Waiting for SVID files to appear in new pod")
+			Eventually(func() string {
+				stdout, _, err := utils.ExecInPod(testCtx, f.Namespace, newPodName, f.AppContainer, []string{"ls", "/certs/"})
+				if err != nil {
+					return ""
+				}
+				return stdout
+			}).WithTimeout(utils.DefaultTimeout).WithPolling(utils.DefaultInterval).Should(
+				And(ContainSubstring("svid.pem"), ContainSubstring("svid_key.pem"), ContainSubstring("bundle.pem")))
+
+			By("Verifying new pod received a fresh SVID with a different serial number")
+			_, _, _, newCert, err := utils.ReadAndParseSVIDCertificate(testCtx, f.Namespace, newPodName, f.AppContainer)
+			Expect(err).NotTo(HaveOccurred(), "failed to read svid.pem from new pod")
+			newSerial := newCert.SerialNumber.String()
+			fmt.Fprintf(GinkgoWriter, "new SVID serial: %s\n", newSerial)
+			Expect(newSerial).NotTo(Equal(initialSerial),
+				"re-created pod must receive a fresh SVID with a different serial number")
+
+			By("Verifying new SVID is currently valid")
+			Expect(newCert.NotBefore.Before(time.Now())).To(BeTrue(), "new cert NotBefore must be in the past")
+			Expect(newCert.NotAfter.After(time.Now())).To(BeTrue(), "new cert NotAfter must be in the future")
+		})
+
 		It("should propagate ClusterSPIFFEID template update to workload SVID", Label("attestation"), func() {
 			By("Setting up attestation environment")
 			f := utils.SetupAttestationTest(testCtx, k8sClient, clientset, "spiffeid-update", nil)
