@@ -398,8 +398,10 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 		})
 	})
 
-	// TLS baseline sanity: adaptive check that operand ConfigMaps match the current
-	// cluster APIServer TLS profile. No profile patching and no wire probes.
+	// TLS baseline sanity runs immediately after operands are Ready so we fail
+	// fast if injected TLS does not match the cluster APIServer profile.
+	// Ordered: a failure here skips later specs by design (security gate).
+	// No profile patching and no wire probes.
 	Context("TLS baseline sanity", func() {
 		It("operand ConfigMaps match the cluster APIServer TLS profile", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), utils.DefaultTimeout)
@@ -557,7 +559,7 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 				By("Verifying bundle certificates are CAs with CertSign KeyUsage")
 				for i, ca := range bundleCerts {
 					Expect(ca.IsCA).To(BeTrue(), "bundle certificate [%d] must be a CA", i)
-					Expect(ca.KeyUsage & x509.KeyUsageCertSign).NotTo(BeZero(),
+					Expect(ca.KeyUsage&x509.KeyUsageCertSign).NotTo(BeZero(),
 						"bundle certificate [%d] KeyUsage must include CertSign", i)
 					fmt.Fprintf(GinkgoWriter, "bundle cert [%d]: Subject=%s, IsCA=%v, KeyUsage=%d\n",
 						i, ca.Subject, ca.IsCA, ca.KeyUsage)

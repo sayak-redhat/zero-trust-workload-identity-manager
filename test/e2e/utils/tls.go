@@ -116,12 +116,16 @@ func ExpectedOperandTLSForAPIServerProfile(profileType string) (minVersion strin
 
 func patchAPIServerTLSProfile(ctx context.Context, configClient configv1.ConfigV1Interface, profileType string) error {
 	subObjectKey := strings.ToLower(profileType)
+	profile := map[string]interface{}{"type": profileType}
+	// JSON merge patch keeps sibling union members. Null them so a switch from
+	// Modern/Old/Custom does not leave stale keys next to the active type.
+	for _, key := range []string{"old", "intermediate", "modern", "custom"} {
+		profile[key] = nil
+	}
+	profile[subObjectKey] = map[string]interface{}{}
 	patch := map[string]interface{}{
 		"spec": map[string]interface{}{
-			"tlsSecurityProfile": map[string]interface{}{
-				"type":       profileType,
-				subObjectKey: map[string]interface{}{},
-			},
+			"tlsSecurityProfile": profile,
 		},
 	}
 	patchBytes, err := json.Marshal(patch)
@@ -484,14 +488,13 @@ func restrictedContainerSecurityContext() *corev1.SecurityContext {
 		AllowPrivilegeEscalation: ptr.To(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		RunAsNonRoot:             ptr.To(true),
-		RunAsUser:                ptr.To(int64(1000)),
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
 }
 
 // EnsureOpenSSLProbePod creates a short-lived UBI pod with openssl and waits until Ready.
-// Registers DeferCleanup to delete the pod. The SecurityContext mirrors NewAttestationPod's
-// restricted-PSA-compliant settings so the probe pod runs on the same clusters as the operands.
+// Registers DeferCleanup to delete the pod. RunAsUser is omitted so restricted-v2 SCC
+// can assign a UID from the operator namespace uid-range.
 func EnsureOpenSSLProbePod(ctx context.Context, k8sClient client.Client, clientset kubernetes.Interface) {
 	By(fmt.Sprintf("Ensuring openssl probe pod %s/%s", OperatorNamespace, TLSOpenSSLProbePodName))
 
