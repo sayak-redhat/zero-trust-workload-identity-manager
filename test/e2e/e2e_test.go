@@ -398,6 +398,31 @@ var _ = Describe("Zero Trust Workload Identity Manager", Ordered, func() {
 		})
 	})
 
+	// TLS baseline sanity: adaptive check that operand ConfigMaps match the current
+	// cluster APIServer TLS profile. No profile patching and no wire probes.
+	Context("TLS baseline sanity", func() {
+		It("operand ConfigMaps match the cluster APIServer TLS profile", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), utils.DefaultTimeout)
+			defer cancel()
+
+			if !utils.IsAPIServerClusterAccessible(ctx, configClient) {
+				Skip("cluster APIServer config not accessible; TLS sanity requires OpenShift")
+			}
+
+			profileType, err := utils.GetAPIServerTLSProfileType(ctx, configClient)
+			Expect(err).NotTo(HaveOccurred(), "failed to read APIServer tlsSecurityProfile.type")
+
+			minVersion, requireCiphers, ok := utils.ExpectedOperandTLSForAPIServerProfile(profileType)
+			if !ok {
+				Skip(fmt.Sprintf("unsupported APIServer TLS profile for sanity: %q", profileType))
+			}
+			fmt.Fprintf(GinkgoWriter, "TLS sanity: APIServer profile=%q → operand min=%s requireCiphers=%v\n",
+				profileType, minVersion, requireCiphers)
+
+			utils.AssertTLSProfileCompliance(ctx, configClient, clientset, "", minVersion, requireCiphers)
+		})
+	})
+
 	Context("OperatorCondition", func() {
 		It("Upgradeable should be True when all operands are ready", func() {
 			By("Verifying Upgradeable condition details")
