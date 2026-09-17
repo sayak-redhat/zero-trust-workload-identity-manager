@@ -42,7 +42,8 @@ var tlsProfileCases = []tlsProfileCase{
 // Assumes operator + operands are already installed and Ready on the target cluster.
 var _ = Describe("TLS Profile Compliance", Label("tls"), Ordered, func() {
 	BeforeAll(func() {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), utils.TestContextTimeout)
+		defer cancel()
 
 		if !utils.IsAPIServerClusterAccessible(ctx, configClient) {
 			Skip("cluster APIServer config not accessible; TLS tests require OpenShift")

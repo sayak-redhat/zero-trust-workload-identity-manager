@@ -557,12 +557,12 @@ func AssertTLSWireCompliance(ctx context.Context, clientset kubernetes.Interface
 		Eventually(func(g Gomega) {
 			var probeErr error
 			protocol, probeErr = opensslProbeProtocol(ctx, addr, door.openSSLArgs...)
-			g.Expect(probeErr).NotTo(HaveOccurred(), "openssl probe failed for door %s (%s)", door.name, addr)
-			g.Expect(protocol).NotTo(BeEmpty(), "openssl did not report Protocol for door %s (%s)", door.name, addr)
+			g.Expect(probeErr).NotTo(HaveOccurred(), "openssl probe failed for door %s", door.name)
+			g.Expect(protocol).NotTo(BeEmpty(), "openssl did not report Protocol for door %s", door.name)
 		}).WithTimeout(TLSWireProbeTimeout).WithPolling(ShortInterval).Should(Succeed(),
 			"door %s should complete TLS handshake within %v", door.name, TLSWireProbeTimeout)
 
-		fmt.Fprintf(GinkgoWriter, "door %s (%s) negotiated %s\n", door.name, addr, protocol)
+		fmt.Fprintf(GinkgoWriter, "door %s negotiated %s\n", door.name, protocol)
 		Expect(tlsProtocolMeetsMinimum(protocol, expectedMinVersion)).To(BeTrue(),
 			"door %s negotiated %s, want >= %s", door.name, protocol, expectedMinVersion)
 	}
@@ -596,7 +596,8 @@ func opensslProbeProtocol(ctx context.Context, hostPort string, extraArgs ...str
 	stdout, stderr, err := ExecInPod(ctx, OperatorNamespace, TLSOpenSSLProbePodName, TLSOpenSSLProbeContainer, cmd)
 	out := stdout + "\n" + stderr
 	if err != nil && !strings.Contains(out, "Protocol") && !strings.Contains(out, "New, TLSv") {
-		return "", fmt.Errorf("openssl s_client %v failed: %w (output: %s)", args, err, strings.TrimSpace(out))
+		fmt.Fprintf(GinkgoWriter, "openssl s_client exec failed: %s\n", opensslDiagnostic(out))
+		return "", fmt.Errorf("openssl s_client exec failed")
 	}
 
 	if m := tlsProtocolLineRE.FindStringSubmatch(out); len(m) == 2 {
@@ -605,7 +606,49 @@ func opensslProbeProtocol(ctx context.Context, hostPort string, extraArgs ...str
 	if m := tlsNewCipherRE.FindStringSubmatch(out); len(m) == 2 {
 		return normalizeTLSProtocol(m[1]), nil
 	}
-	return "", fmt.Errorf("could not parse TLS protocol from openssl output for %s: %s", hostPort, truncate(out, 800))
+	fmt.Fprintf(GinkgoWriter, "openssl s_client protocol parse failed: %s\n", opensslDiagnostic(out))
+	return "", fmt.Errorf("openssl s_client protocol parse failed")
+}
+
+// opensslDiagnostic keeps protocol/verify/alert lines only. No PEM, session, or addresses.
+func opensslDiagnostic(out string) string {
+	var kept []string
+	for _, line := range strings.Split(out, "\n") {
+		l := strings.TrimSpace(line)
+		if l == "" || !opensslDiagnosticLine(l) {
+			continue
+		}
+		kept = append(kept, l)
+		if len(kept) >= 6 {
+			break
+		}
+	}
+	if len(kept) == 0 {
+		return "no protocol or verify status in openssl output"
+	}
+	return strings.Join(kept, "; ")
+}
+
+func opensslDiagnosticLine(l string) bool {
+	lower := strings.ToLower(l)
+	switch {
+	case strings.Contains(lower, "protocol") && strings.Contains(lower, ":"):
+		return true
+	case strings.Contains(lower, "verify return code"):
+		return true
+	case strings.Contains(lower, "verify error"):
+		return true
+	case strings.HasPrefix(lower, "new, tls"):
+		return true
+	case strings.Contains(lower, "handshake failure"):
+		return true
+	case strings.Contains(lower, "no peer certificate"):
+		return true
+	case strings.Contains(lower, "alert") && (strings.Contains(lower, "ssl") || strings.Contains(lower, "tls")):
+		return true
+	default:
+		return false
+	}
 }
 
 func shellQuote(s string) string {
@@ -673,12 +716,4 @@ func resolvePodHostPort(ctx context.Context, clientset kubernetes.Interface, pod
 		return "", fmt.Errorf("pod %s has no PodIP", podName)
 	}
 	return fmt.Sprintf("%s:%d", pod.Status.PodIP, port), nil
-}
-
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }
